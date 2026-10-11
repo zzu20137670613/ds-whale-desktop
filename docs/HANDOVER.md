@@ -275,6 +275,21 @@ scripts/
   （检测到 Clash `127.0.0.1:7890` 就走代理，只对本次生效）。
   **它的退出码经常是 1，那是 PowerShell 把 git 的进度输出当错误** —— 以
   `git ls-remote origin refs/heads/main` 的 SHA 为准。
+- **联网通道实测（2026-09-29）：直连的 git 不通，普通 HTTPS 通。** 别把这两件事混为一谈：
+
+  | 通道 | 直连 | 走 Clash 7890 |
+  | --- | --- | --- |
+  | TCP 到 `api.github.com` / `codeload.github.com` / `github.com` / `api.deepseek.com` 的 443 | ✅ 能建连 | ✅ |
+  | 普通 HTTPS 请求（`Invoke-WebRequest https://api.github.com/zen` → 200；`curl` 之类） | ✅ | ✅ |
+  | **`git ls-remote origin`** | ❌ 约 22s 后 `Recv failure: Connection was reset`（exit 128） | ✅ |
+  | **`git push`（含 `--dry-run`）** | ❌ 约 21–41s 后 `Failed to connect to github.com:443` / reset | ✅ |
+
+  结论：**TCP 通 ≠ git 通**。端口连得上、GitHub API 也取得回来，但 git 的
+  `git-receive-pack` / fetch 端点会被掐，所以 `Test-NetConnection` 的结果**不能**用来判断
+  "能不能推"。要判断只认这一条：
+  `git -c http.proxy=http://127.0.0.1:7890 ls-remote origin refs/heads/main`。
+  反过来，**查提交、读仓库信息不必走代理**（`api.github.com` 直连可用），
+  只有 git 命令需要 —— `scripts/push.ps1` 已经自动处理。
 - **npm 11+ 会拦 Electron 的安装脚本**：`node node_modules/electron/install.js` 补下载。
 - `pwsh`（PowerShell 7）**不存在**，脚本一律用 `powershell`（5.1）。
 - **`ELECTRON_RUN_AS_NODE` 在 DSH 会话里是 `1`**：被 agent 工具调起来的 shell 会继承它，

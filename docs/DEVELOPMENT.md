@@ -119,7 +119,7 @@ menu.style.top  = Math.min(y, root.innerHeight - 160) + "px";
 "小游戏"开关变化，实测 8 项就有 **292px** 高。同一文件里其它浮层
 （第 473、2078 行）用的是实测 `offsetWidth/offsetHeight`，这处是漏改的。
 
-后果：把鲸鱼娘放到屏幕右下角再右键，菜单位置被夹到 `(innerWidth-180, innerHeight-160)`，
+后果：把鲸鲸放到屏幕右下角再右键，菜单位置被夹到 `(innerWidth-180, innerHeight-160)`，
 右下两侧同时溢出。实测数据（1920x1032 视口、8 项菜单）：
 
 | | left | top | right | bottom | 右溢 | 下溢 |

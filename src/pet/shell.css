@@ -87,6 +87,15 @@ textarea {
   border-color: #4aa8ff;
 }
 
+/* 纯展示行（峰谷倒计时）：没有可点的去处，就别摆出可点的姿态 */
+#dsh-whale-shell-hud .hud-row[data-static] {
+  cursor: default;
+}
+
+#dsh-whale-shell-hud .hud-row[data-static]:hover {
+  border-color: var(--dsw-alias-border-l2, rgb(0 0 0 / 12%));
+}
+
 #dsh-whale-shell-hud .hud-row .k {
   flex: 1 1 auto;
   min-width: 0;

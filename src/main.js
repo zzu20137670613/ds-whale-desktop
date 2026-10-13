@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * 鲸鱼娘桌宠 —— Electron 主进程。
+ * 鲸鲸桌宠 —— Electron 主进程。
  *
  * 形态取舍（为什么是"整屏透明窗口"而不是"桌宠大小的窗口"）：
  *   上游桌宠是 position:fixed + 视口坐标定位，位置存在 localStorage 的
@@ -240,7 +240,7 @@ function createWindow() {
     maximizable: false,
     fullscreenable: false,
     skipTaskbar: true,
-    title: '鲸鱼娘桌宠',
+    title: '鲸鲸桌宠',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -395,7 +395,9 @@ function currentRates(at, modelHint) {
     lastRateSource = signature;
     log(
       '[price]',
-      resolved.source === 'table' ? `价目表命中 ${resolved.modelKey}` : `价目表无此模型（${currentModel || '未知'}），改用手动配置`,
+      resolved.source === 'table'
+        ? `价目表命中 ${resolved.modelKey}${resolved.usingDefault ? '（未识别到模型，用默认/备选模型）' : ''}`
+        : `价目表无此模型（${currentModel || '未知'}），改用手动配置`,
       resolved.peak ? '高峰价' : '空闲价',
       JSON.stringify(resolved.rates),
     );
@@ -569,7 +571,7 @@ function openGrowthWindow(tab) {
   growthWin = createAuxWindow({
     width: 620,
     height: 620,
-    title: '鲸鱼娘 · 养成',
+    title: '鲸鲸 · 养成',
     url: `${server.url}/pet/growth.html?tab=${encodeURIComponent(wanted)}`,
     preload: path.join(__dirname, 'growth-preload.js'),
     autoSize: false, // 长列表窗口：固定高度 + 内部滚动更合适
@@ -774,7 +776,7 @@ function createTray() {
   const icon = buildTrayIcon();
   log('[tray] icon', icon.isEmpty() ? 'EMPTY(退回系统默认)' : `${icon.getSize().width}x${icon.getSize().height}`);
   tray = new Tray(icon);
-  tray.setToolTip('鲸鱼娘桌宠');
+  tray.setToolTip('鲸鲸桌宠');
   refreshTrayMenu();
   tray.on('click', toggleVisible);
 }
@@ -926,36 +928,53 @@ function runGrowthProbe() {
         };
       })()`);
       check(
-        '头顶浮层结构正确（天气 / 余额 + 两个入口，挂在桌宠根节点下）',
+        '头顶浮层结构正确（天气 / 余额 / 峰谷 + 两个入口，挂在桌宠根节点下）',
         Boolean(
           hud.found &&
             hud.parentIsRoot &&
-            (hud.rows || []).join(',') === 'weather,balance' &&
+            (hud.rows || []).join(',') === 'weather,balance,peak' &&
             (hud.actions || []).join(',') === '日常养成,余额查询'
         ),
         JSON.stringify(hud)
       );
       check('浮层初始隐藏，且上游偏好面板已被隐藏', hud.found && hud.hidden === true && hud.prefsHidden === true, JSON.stringify({ hidden: hud.hidden, prefsHidden: hud.prefsHidden }));
 
-      // ---- 2) 齿轮打开浮层 ----
+      // ---- 2) 悬浮直接显示浮层（改版：去掉"先点设置图标"一步）----
+      // 悬浮联动复用点击穿透判定：elementFromPoint 命中她的身体（frame）或浮层都算"压到她身上"。
+      // 探针没法真的挪系统光标，就朝她身上分发 mousemove，走同一条链路。
       const shown = await win.webContents.executeJavaScript(`(() => {
-        const gear = document.querySelector('[data-dsh-whale-gear]') || document.querySelector('[data-dsh-whale-gear-mini]');
-        if (!gear) return { error: 'no gear' };
-        gear.click();
+        const frame = document.querySelector('[data-dsh-whale-frame]');
+        if (!frame) return { error: 'no frame' };
+        const r = frame.getBoundingClientRect();
+        if (!r.width || !r.height) return { error: 'frame not laid out' };
+        // 帧可能贴边/半身出屏，取几个候选点夹回视口内，找 elementFromPoint 能命中的
+        const pick = [
+          [r.left + r.width / 2, r.top + r.height / 2],
+          [r.left + r.width / 2, r.top + r.height * 0.25],
+          [r.left + r.width * 0.25, r.top + r.height / 2],
+        ]
+          .map(([x, y]) => [Math.min(Math.max(x, 1), innerWidth - 1), Math.min(Math.max(y, 1), innerHeight - 1)])
+          .find(([x, y]) => {
+            const el = document.elementFromPoint(x, y);
+            return el && el !== document.documentElement && el !== document.body;
+          });
+        if (!pick) return { error: 'no hover point' };
+        window.dispatchEvent(new MouseEvent('mousemove', { clientX: pick[0], clientY: pick[1], bubbles: true }));
         const el = document.getElementById('dsh-whale-shell-hud');
+        if (!el) return { error: 'no hud' };
         const actions = [...el.querySelectorAll('.hud-action')];
         return {
           hidden: el.hidden,
           texts: [...el.querySelectorAll('.hud-row')].map((r) => (r.querySelector('.k') || {}).textContent + ' / ' + (r.querySelector('.v') || {}).textContent),
           // 两个入口的**实际渲染尺寸**（必须等浮层可见才量得到，否则是 0×0）
           actionBoxes: actions.map((b) => {
-            const r = b.getBoundingClientRect();
-            return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) };
+            const rr = b.getBoundingClientRect();
+            return { w: Math.round(rr.width), h: Math.round(rr.height), top: Math.round(rr.top) };
           }),
         };
       })()`);
       check(
-        '点齿轮 ⚙ 打开浮层，且每行都有文案',
+        '悬浮到她身上直接显示浮层，且每行都有文案',
         shown && shown.hidden === false && (shown.texts || []).every((t) => t && t.split(' / ')[0]),
         JSON.stringify(shown)
       );
@@ -977,6 +996,18 @@ function runGrowthProbe() {
           log('[growth-probe] hud screenshot', file);
         }
       }
+
+      // ---- 2.5) 点她本体 → 浮层应收起，且悬浮不会立刻弹回 ----
+      const clickCollapse = await win.webContents.executeJavaScript(`(() => {
+        const frame = document.querySelector('[data-dsh-whale-frame]');
+        if (!frame) return { error: 'no frame' };
+        frame.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        frame.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        frame.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        const el = document.getElementById('dsh-whale-shell-hud');
+        return { hidden: el.hidden };
+      })()`);
+      check('点击她本体（触发互动）后浮层收起', clickCollapse.hidden === true, JSON.stringify(clickCollapse));
 
       // ---- 3) 「日常养成」打开养成窗口 ----
       const growthClick = await win.webContents.executeJavaScript(`(() => {
@@ -1241,7 +1272,7 @@ function runGrowthProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 20;
+    const expected = 21;
     log(
       '[growth-probe]',
       results.length !== expected
@@ -1868,7 +1899,7 @@ function runSettingsProbe() {
         return { labels: [...menu.querySelectorAll('button')].map((n) => n.textContent.trim()) };
       })()`);
       const labels = (mascotMenu && mascotMenu.labels) || [];
-      const interaction = ['投喂小点心', '戳一下', '夸夸 鲸鱼娘', '回到原位'];
+      const interaction = ['投喂小点心', '戳一下', '夸夸 鲸鲸', '回到原位'];
       check(
         '桌宠菜单不再含「打开看板娘设置」',
         labels.length > 0 && !labels.includes('打开看板娘设置'),
@@ -2588,12 +2619,14 @@ function registerIpc() {
   ipcMain.handle('shell:price-info', () => {
     const now = Date.now();
     const resolved = currentRates(now, dshWatcher ? dshWatcher.model : null);
-    const hit = lookupModel(priceTable, currentModel);
+    // 用"实际取价的那个模型"查表：识别不到当前模型时，resolved.modelKey 是价目表里的默认/备选模型
+    const hit = resolved.modelKey ? lookupModel(priceTable, resolved.modelKey) : null;
     const entry = hit ? hit.entry : null;
     const pair = (v) => ({ idle: v ? Number(v.idle) : null, peak: v ? Number(v.peak) : null });
     return {
       model: currentModel || '',
       inTable: Boolean(hit),
+      usingDefault: Boolean(resolved.usingDefault),
       matchedBy: hit ? hit.matchedBy : null,
       label: entry ? entry.label || hit.key : '',
       source: resolved.source,

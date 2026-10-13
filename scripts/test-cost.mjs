@@ -494,6 +494,38 @@ check('默认模型：从 DSH 设置文件里读 agent-default-model.model', () 
   assert.equal(priceTable.readDshModel(path.join(pricingTmp, 'nope.yaml')), '');
 });
 
+check('价目表带默认/备选模型 defaultModel，且必须是表里的键', () => {
+  assert.equal(TABLE.defaultModel, 'deepseek-flash');
+  assert.ok(TABLE.models[TABLE.defaultModel], 'defaultModel 必须是 models 里的一个键');
+});
+
+check('识别不到模型时退回默认模型（含峰谷），而不是掉进手动配置', () => {
+  const idle = priceTable.resolveRates({ table: TABLE, model: '', manual: MANUAL, at: OFFPEAK });
+  assert.equal(idle.source, 'table');
+  assert.equal(idle.modelKey, 'deepseek-flash');
+  assert.equal(idle.usingDefault, true);
+  assert.deepEqual(idle.rates, { cacheHitPerM: 0.02, cacheMissPerM: 1, outputPerM: 4 });
+  // 默认模型同样吃峰谷：高峰用 peak 那一档
+  const peak = priceTable.resolveRates({ table: TABLE, model: '', manual: MANUAL, at: PEAK });
+  assert.equal(peak.peak, true);
+  assert.deepEqual(peak.rates, { cacheHitPerM: 0.04, cacheMissPerM: 2, outputPerM: 8 });
+  // 显式给的"表里没有的模型"仍走手动配置（默认模型不越权接管）
+  const other = priceTable.resolveRates({ table: TABLE, model: 'gpt-x', manual: MANUAL, at: OFFPEAK });
+  assert.equal(other.source, 'manual');
+  assert.equal(other.usingDefault, false);
+});
+
+check('默认模型：也能读 DSH profile 的 cordis.patch.yml 形态（- id: agent-default-model）', () => {
+  const file = path.join(pricingTmp, 'cordis.patch.yml');
+  fs.writeFileSync(
+    file,
+    '- id: agent-default-model\n  name: "@deepseek-ai/dsh-agent-default-model"\n  config:\n    provider: deepseek-account\n    model: deepseek-flash\n    reasoningEffort: high\n- id: ui-chat\n  config:\n    transcriptView: detailed\n'
+  );
+  assert.equal(priceTable.readDshModel(file), 'deepseek-flash');
+  // 候选数组：第一个读不到就往后找
+  assert.equal(priceTable.readDshModel([path.join(pricingTmp, 'nope.yaml'), file]), 'deepseek-flash');
+});
+
 fs.rmSync(pricingTmp, { recursive: true, force: true });
 
 // ---------------------------------------------------------------- 结果

@@ -381,7 +381,7 @@
     var gear = doc.createElement("button");
     gear.type = "button";
     gear.setAttribute("data-dsh-whale-gear", "true");
-    gear.setAttribute("aria-label", "鲸鱼娘偏好");
+    gear.setAttribute("aria-label", "鲸鲸偏好");
     gear.textContent = "⚙";
     gear.addEventListener("click", function (event) {
       event.stopPropagation();
@@ -393,7 +393,7 @@
     var gearMini = doc.createElement("button");
     gearMini.type = "button";
     gearMini.setAttribute("data-dsh-whale-gear-mini", "true");
-    gearMini.setAttribute("aria-label", "鲸鱼娘偏好");
+    gearMini.setAttribute("aria-label", "鲸鲸偏好");
     gearMini.textContent = "⚙";
     gearMini.addEventListener("click", function (event) {
       event.stopPropagation();
@@ -576,7 +576,7 @@
     var items = [
       { label: "投喂小点心", action: function () { var out = applyGrowth({ type: "feed" }, Date.now(), 0); applyQuestSignal("feed", 1); burst("🍰"); showMood("eat", 3000); var line = say("interact", "feed"); if (line) showLine(line); if (out.unlocks.length) announceUnlocks(out.unlocks); } },
       { label: "戳一下", action: function () { applyGrowth({ type: "poke" }, Date.now(), 0); burst("💢"); showMood("angry", 3000); var line = say("interact", "poke"); if (line) showLine(line); } },
-      { label: "夸夸 鲸鱼娘", action: function () { applyGrowth({ type: "praise" }, Date.now(), 0); burst("✨"); showMood("tail-swing", 3000, true); var line = say("interact", "praise"); if (line) showLine(line); } }
+      { label: "夸夸 鲸鲸", action: function () { applyGrowth({ type: "praise" }, Date.now(), 0); burst("✨"); showMood("tail-swing", 3000, true); var line = say("interact", "praise"); if (line) showLine(line); } }
     ];
     if (readPref("game")) {
       items.push({ label: "小游戏：戳泡泡", action: function () { openGame(); } });
@@ -1467,19 +1467,19 @@
   function title() {
     try { var t = root.localStorage.getItem("whale-moe:title"); return t && t.trim() ? t.trim() : "主人"; } catch (e) { return "主人"; }
   }
-  /* 看板娘的自称（对应「如何称呼我」的另一半）：留空或异常时回落「鲸鱼娘」。
+  /* 看板娘的自称（对应「如何称呼我」的另一半）：留空或异常时回落「鲸鲸」。
      台词库里 363 处自称都在这里统一替换，不逐条改写。 */
   function selfName() {
     try {
       var n = root.localStorage.getItem("whale-moe:selfName");
-      if (!n || !n.trim()) return "鲸鱼娘";
+      if (!n || !n.trim()) return "鲸鲸";
       var v = n.trim();
       return v.length > 12 ? v.slice(0, 12) : v;
-    } catch (e) { return "鲸鱼娘"; }
+    } catch (e) { return "鲸鲸"; }
   }
   function localizeLine(line) {
     if (core && typeof core.applyNames === "function") return core.applyNames(line, title(), selfName());
-    return String(line).split("主人").join(title()).split("鲸鱼娘").join(selfName());
+    return String(line).split("主人").join(title()).split("鲸鲸").join(selfName());
   }
   function isNight(now) {
     var h = new Date(now || Date.now()).getHours();

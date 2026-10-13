@@ -1,6 +1,6 @@
 # 第三方素材与致谢
 
-## dsh-whale-musume（鲸鱼娘看板娘）
+## dsh-whale-musume（鲸鲸看板娘）
 
 - 仓库：https://github.com/Sutera-Diffusus/dsh-whale-musume
 - 作者：Sutera-Diffusus 及其贡献者

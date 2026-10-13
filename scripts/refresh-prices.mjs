@@ -173,6 +173,8 @@ function buildTable({ models, aliases }, previous) {
     peakNote:
       previous?.peakNote ||
       '北京时间周一至周五（不含中国法定节假日）9:00-12:00、14:00-18:00 为高峰；空闲价 = 高峰价的一半。下面每个价格都写明 idle（空闲）/ peak（高峰），不靠倍率推导。',
+    // 默认/备选模型不在官方表格里，跟着旧文件保留（没有旧文件就按 Flash）
+    defaultModel: previous?.defaultModel || 'deepseek-flash',
     models,
     aliases: { $comment: aliases.$comment || '旧模型名：官方说明仍可调用，但对应模型已下线，按 Flash 价格计费', ...aliases },
   };

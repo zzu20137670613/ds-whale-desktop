@@ -342,7 +342,7 @@
 
     function renderPriceInfo(info) {
       priceInfo = info;
-      modelName.textContent = `当前模型：${info.model || '未知'}`;
+      modelName.textContent = info.model ? `当前模型：${info.model}` : '当前模型：未识别';
       if (info.table.ok === false) {
         modelBadge.textContent = '价目表缺失';
         modelBadge.setAttribute('data-tone', 'warn');
@@ -351,7 +351,11 @@
       } else if (info.inTable) {
         modelBadge.textContent = info.peak ? '高峰价' : '空闲价';
         modelBadge.setAttribute('data-tone', info.peak ? 'peak' : 'idle');
-        modelHint.textContent = `${info.label}${info.matchedBy === 'alias' ? '（旧模型名，按此表计费）' : ''} · 价目表 ${info.table.updatedAt}`;
+        const shownLabel = `${info.label}${info.matchedBy === 'alias' ? '（旧模型名，按此表计费）' : ''}`;
+        // usingDefault：任务还没报出模型名、DSH 配置也读不到，用价目表里的默认/备选模型估算
+        modelHint.textContent = info.usingDefault
+          ? `暂未识别到模型，按默认/备选 ${shownLabel} 估算 · 价目表 ${info.table.updatedAt}`
+          : `${shownLabel} · 价目表 ${info.table.updatedAt}`;
         const p = info.tablePrices;
         const money = (v) => (v === null || v === undefined ? '—' : String(v));
         modelPrices.textContent =

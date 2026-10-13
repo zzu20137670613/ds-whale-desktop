@@ -15,6 +15,8 @@
     ]
   ],
   "peakNote": "北京时间周一至周五（不含中国法定节假日）9:00-12:00、14:00-18:00 为高峰；空闲价 = 高峰价的一半。下面每个价格都写明 idle（空闲）/ peak（高峰），不靠倍率推导。",
+  "defaultModel": "deepseek-flash",
+  "defaultModelNote": "识别不到当前模型时的兜底/备选模型（会话记录还没报出模型名、DSH 配置也读不到）。取值必须是下面 models 里的一个键 —— 默认用优惠的 Flash（DeepSeek-V4.1-Flash）估算，而不是掉进手动配置。",
   "models": {
     "deepseek-flash": {
       "label": "DeepSeek-V4.1-Flash",

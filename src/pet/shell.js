@@ -66,6 +66,8 @@
       at: Date.now(),
     };
     setInteractive(hit);
+    // 悬浮联动：压到她身上（含浮层）→ 显示状态浮层；离开 → 收起（见 syncHudWithHover）
+    syncHudWithHover(hit);
   }
 
   window.addEventListener(
@@ -86,6 +88,8 @@
   window.addEventListener('mouseleave', () => {
     lastMouse = { x: null, y: null, hit: false, leave: true, at: Date.now() };
     setInteractive(false);
+    // 提前触发收起，不用等主进程下一轮光标轮询（最长 80ms）
+    syncHudWithHover(false);
   });
 
   // 兜底：窗口失焦后一律回到穿透，避免"卡在接收鼠标"把桌面点不动
@@ -365,7 +369,8 @@
 
   // ---------- 头顶浮层：天气 / 余额 / 养成入口 ----------
   // 上游那块位置原本是三个开关（看板娘/台词气泡/粒子效果）——它们已经进了设置窗口，
-  // 于是壳层把这块位置改造成"状态 + 入口"。齿轮 ⚙ 仍然负责开合它。
+  // 于是壳层把这块位置改造成"状态 + 入口"。显示改由**悬浮**控制（移开或点她本体收起），
+  // 不需要再像原来那样先点右上角的设置图标（齿轮开合逻辑已移除）。
   const HUD_ID = 'dsh-whale-shell-hud';
   let hudTimer = null;
 
@@ -405,6 +410,58 @@
     const shown = Number.isFinite(amount) ? amount.toFixed(2) : String(state.amount);
     const tier = core && core.formatBalance ? core.formatBalance(amount, state.currency, false) : state.tier;
     return { main: `💰 ${state.currency} ${shown}`, sub: tier || '', tone: 'ok' };
+  }
+
+  /*
+   * 峰谷时段 + 倒计时（搬自上游 dsh-whale-widget 的「峰谷模块」）。
+   *
+   * 规则（北京时间）：
+   *   · 工作日 9:00–12:00、14:00–18:00 为高峰；其余（午休、夜间、周末全天）为空闲；
+   *   · 法定节假日同样全天谷价 —— 但放假安排前端拿不到（上游由宿主下发），
+   *     这里与上游的已知边界一致地**不处理**（那几天会按工作日算，偏保守）。
+   * 倒计时指向「下一个时段切换点」（高峰→空闲 或 空闲→高峰），逐秒刷新。
+   */
+  function isPeakAt(sec) {
+    const bj = new Date((sec + 8 * 3600) * 1000);
+    const dow = bj.getUTCDay();
+    if (dow === 0 || dow === 6) {
+      return false;
+    }
+    const hour = bj.getUTCHours();
+    return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18);
+  }
+
+  function hudReadPeak() {
+    const sec = Math.floor(Date.now() / 1000);
+    const peak = isPeakAt(sec);
+    // 从今天起按天扫描，取第一个「状态与当前不同」的边界（与上游同款算法）
+    const dayStart = Math.floor((sec + 8 * 3600) / 86400) * 86400;
+    const edges = [0, 9 * 3600, 12 * 3600, 14 * 3600, 18 * 3600];
+    let next = null;
+    for (let d = 0; d <= 12 && next === null; d++) {
+      const base = dayStart + d * 86400;
+      for (let i = 0; i < edges.length; i++) {
+        const ts = base + edges[i] - 8 * 3600;
+        if (ts <= sec + 1) {
+          continue;
+        }
+        if (isPeakAt(ts) !== peak) {
+          next = ts;
+          break;
+        }
+      }
+    }
+    if (next === null) {
+      next = sec + 86400;
+    }
+    const remain = Math.max(0, next - sec);
+    const p = (n) => String(n).padStart(2, '0');
+    const cd = `${p(Math.floor(remain / 3600))}:${p(Math.floor((remain % 3600) / 60))}:${p(remain % 60)}`;
+    return {
+      main: peak ? '🔥 梁文峰' : '💧 梁文谷',
+      sub: `距${peak ? '空闲' : '高峰'} ${cd}`,
+      tone: 'ok',
+    };
   }
 
   // 天气预取。
@@ -488,10 +545,15 @@
     const sub = document.createElement('span');
     sub.className = 'v';
     row.append(main, sub);
-    row.addEventListener('click', (event) => {
-      event.stopPropagation();
-      onClick();
-    });
+    if (typeof onClick === 'function') {
+      row.addEventListener('click', (event) => {
+        event.stopPropagation();
+        onClick();
+      });
+    } else {
+      // 纯展示行（峰谷倒计时没有可配置项）：不挂点击，也不摆出可点的姿态
+      row.setAttribute('data-static', 'true');
+    }
     row.__update = () => {
       const info = loader();
       main.textContent = info.main;
@@ -540,6 +602,7 @@
 
     const weatherRow = hudRow('weather', hudReadWeather, closeAnd(toSettings));
     const balanceRow = hudRow('balance', hudReadBalance, closeAnd(toSettings));
+    const peakRow = hudRow('peak', hudReadPeak);
 
     /*
      * 入口按钮：两个并排、等宽（.hud-actions 里 flex:1），
@@ -568,14 +631,15 @@
       queryBalance(button);
     });
 
-    hud.append(weatherRow, balanceRow, actions);
+    hud.append(weatherRow, balanceRow, peakRow, actions);
     hud.__refresh = () => {
       weatherRow.__update();
       balanceRow.__update();
+      peakRow.__update();
     };
     rootNode.append(hud);
     hud.__refresh();
-    api.log('info', '头顶浮层已就绪（天气 / 余额 / 日常养成 / 余额查询）');
+    api.log('info', '头顶浮层已就绪（天气 / 余额 / 峰谷 / 日常养成 / 余额查询）');
     return hud;
   }
 
@@ -627,7 +691,7 @@
     if (!enabled) {
       line = '余额查询还没启用呢，去设置里打开「显示余额」吧';
     } else if (!state || state.ok !== true || !Number.isFinite(amount)) {
-      line = '余额接口没有响应，鲸鱼娘查不到余额…先看看设置里的余额接口吧';
+      line = '余额接口没有响应，鲸鲸查不到余额…先看看设置里的余额接口吧';
     } else {
       const core = window.DshWhaleMoeCore;
       const tier = core && core.formatBalance ? core.formatBalance(amount, state.currency, false) : state.tier;
@@ -703,8 +767,9 @@
     if (visible) {
       refreshHud();
       if (!hudTimer) {
-        // 天气/余额是异步来的，浮层开着时定期刷一下
-        hudTimer = window.setInterval(refreshHud, 1500);
+        // 天气/余额是异步来的，浮层开着时定期刷一下；
+        // 周期取 1 秒 —— 峰谷倒计时要逐秒走（与上游倒计时的 1000ms 一致）。
+        hudTimer = window.setInterval(refreshHud, 1000);
       }
     } else if (hudTimer) {
       window.clearInterval(hudTimer);
@@ -713,21 +778,64 @@
     return true;
   }
 
-  // 齿轮 ⚙ 改开合我们这块浮层。
-  // 上游的 handler 仍会 toggle 那个已被我们隐藏的偏好面板，无副作用，不去抢它。
+  // ---------- 悬浮直接显示 / 移开收起 ----------
+  // 判定复用点击穿透的 hit（elementFromPoint 命中"她∪浮层"都算压到桌宠，
+  // 因为浮层本身是 pointer-events:auto），所以鼠标从她身上挪到浮层上不会闪断，
+  // 浮层上的按钮、行也照常可点（离开"她∪浮层"整体区域才会收起）。
+  let hudHideTimer = null; // 离开区域后的防抖（避免透明窗口边缘抖动导致闪烁）
+  let hoverSuppressed = false; // 点过她触发互动后，抑制"继续悬浮就弹回"
+  let lastHoverHit = false;
+
+  function hideHudSoon() {
+    if (hudHideTimer) {
+      return;
+    }
+    hudHideTimer = window.setTimeout(() => {
+      hudHideTimer = null;
+      setHudVisible(false);
+    }, 250);
+  }
+
+  function syncHudWithHover(hit) {
+    // 从"不在她身上"变成"在她身上"：允许显示（顺带解除上次点击的抑制）
+    if (hit && !lastHoverHit) {
+      hoverSuppressed = false;
+    }
+    lastHoverHit = hit;
+    if (!hit) {
+      // 离开"她∪浮层"区域 → 防抖收起；一旦离开，点击抑制也随之解除，
+      // 下次再悬浮回来就能正常显示
+      hoverSuppressed = false;
+      hideHudSoon();
+      return;
+    }
+    if (hudHideTimer) {
+      window.clearTimeout(hudHideTimer);
+      hudHideTimer = null;
+    }
+    if (hoverSuppressed) {
+      return; // 刚点过她（触发了互动事件），鼠标不动就保持收起
+    }
+    setHudVisible(true);
+  }
+
+  // 点她本体（触发互动事件）→ 立即收起浮层，并抑制"悬浮立即弹回"。
+  // 浮层内部（行/按钮）的点击放行给它们自己的处理（各有收起/跳转逻辑），
+  // 但同样设抑制——否则点了「余额查询」之类跳转后，浮层会被轮询立刻重新顶出来。
+  // 用捕获阶段：上游给 rootNode 挂了 stopPropagation，只有捕获阶段能提前看到
+  // "点在她身上"这件事。点在浮层内用 DOM 包含关系放行。
   document.addEventListener(
     'click',
     (event) => {
+      const hud = document.getElementById(HUD_ID);
       const target = event.target;
-      if (!target || typeof target.closest !== 'function') {
+      if (target && typeof target.closest === 'function' && hud && hud.contains(target)) {
+        hoverSuppressed = true;
         return;
       }
-      if (!target.closest('[data-dsh-whale-gear], [data-dsh-whale-gear-mini]')) {
-        return;
-      }
-      const hud = ensureHud();
-      if (hud) {
-        setHudVisible(hud.hidden);
+      hoverSuppressed = true;
+      if (hud && !hud.hidden) {
+        setHudVisible(false);
       }
     },
     true
@@ -888,6 +996,7 @@
       hud: {
         weather: hudReadWeather(),
         balance: hudReadBalance(),
+        peak: hudReadPeak(),
       },
       /*
        * 说话钩子是否就位（server.js 注入的那一行）。上报它的理由和 hud 一样：

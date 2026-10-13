@@ -21,7 +21,8 @@ const { DshStateWatcher } = require('./dsh-state');
 const { startBalanceProxy } = require('./balance-proxy');
 const { costOf, shouldAnnounce, announceText, formatTokens, formatMoney, isPeak } = require('./pricing');
 const { loadTable, resolveRates, readDshModel, lookupModel } = require('./price-table');
-const { UsageLedger } = require('./usage-today');
+const { UsageLedger, localDateKey } = require('./usage-today');
+const { BalanceDiff } = require('./balance-diff');
 const {
   DEFAULT_DSH_URL,
   DEFAULT_BOOT_TIMEOUT_MS,
@@ -43,6 +44,13 @@ let balanceProxy = null;
 
 /** 「今日消耗」账本（见 src/usage-today.js）：余额查询要报今天一整天的量。 */
 let usageLedger = null;
+
+/** 「今日消耗」的余额差额估算降级（见 src/balance-diff.js）：账本没有数据源时兜底。 */
+let balanceDiff = null;
+/** 今天 DSH 捕获到的真实（非历史回放）turn 数：>0 时账本为准，=0 时退到差额估算。 */
+let liveDshTurnsToday = 0;
+/** liveDshTurnsToday 对应的本地日期键（跨天归零用）。 */
+let liveDayKey = '';
 
 /** 本地价目表（见 pricing.json 与 src/price-table.js）：运行时只读，不联网。 */
 let priceTable = loadTable();
@@ -429,6 +437,17 @@ function handleTurnEnd(event) {
     if (result === 'duplicate') log('[usage] 重复的 turn，已跳过', key);
   }
 
+  // 统计今天 DSH 捕获到的真实 turn：>0 表示实时账本可用，
+  // 「今日消耗」就以账本为准；=0（只读到历史回放或根本没接 DSH）才退到差额估算
+  if (!event.historical) {
+    const dk = localDateKey(at);
+    if (dk !== liveDayKey) {
+      liveDayKey = dk;
+      liveDshTurnsToday = 0;
+    }
+    liveDshTurnsToday += 1;
+  }
+
   if (event.historical) return; // 历史账只入账
   if (config.costSay === false) return;
   if (!shouldAnnounce(cost, config.costThreshold)) {
@@ -440,6 +459,29 @@ function handleTurnEnd(event) {
   sayToPet(text).then((ok) => {
     if (!ok) log('[cost] 说话钩子不可用，已跳过播报');
   });
+}
+
+/**
+ * 取当前余额（元）—— 差额估算的数据来源。
+ *
+ * 与页面同契约：优先用户自定义 endpoint，其次内置代理（3020）；
+ * 3020 被占用时按"用户自己起了代理/别的实例在跑"处理，直接打 3020 也能中。
+ */
+async function fetchCurrentBalance() {
+  const custom = config ? String(config.balanceEndpoint || '').trim() : '';
+  const endpoint = custom || (balanceProxy ? balanceProxy.url : 'http://127.0.0.1:3020/balance');
+  try {
+    const res = await fetch(endpoint, { signal: AbortSignal.timeout(10000), cache: 'no-store' });
+    const data = await res.json();
+    if (data && data.ok && Array.isArray(data.balances) && data.balances.length) {
+      const amount = Number(data.balances[0].totalBalance);
+      return Number.isFinite(amount) ? amount : null;
+    }
+    return null;
+  } catch (error) {
+    log('[balance-diff] 读余额失败:', error.message);
+    return null;
+  }
 }
 
 function stopDshWatcher() {
@@ -2701,16 +2743,66 @@ function registerIpc() {
    *
    * 数字已经格式化好再交出去 —— 千分位/万/亿/小数的规则只应存在于 src/pricing.js 一处，
    * 页面里再写一遍迟早和播报对不上。
+   *
+   * 数据源两条腿（mode 告诉页面该念哪种文案）：
+   *   · 'ledger' —— DSH 实时账本（今天有真实 turn，探针模式固定走这里保确定性）；
+   *   · 'diff'   —— 没接/接不到 DSH 时，余额差额估算（今日基准 − 当前，见 src/balance-diff.js）；
+   *   · 'none'   —— 两者都不可用。
    */
-  ipcMain.handle('shell:usage-today', () => {
-    const today = usageLedger ? usageLedger.today() : { date: null, tokens: 0, cost: 0, turns: 0 };
+  ipcMain.handle('shell:usage-today', async () => {
+    const dk = localDateKey();
+    if (liveDayKey !== dk) {
+      liveDayKey = dk;
+      liveDshTurnsToday = 0;
+    }
+    const ledgerFirst = PROBE_MODE || liveDshTurnsToday > 0 || !balanceDiff;
+    if (ledgerFirst) {
+      const today = usageLedger ? usageLedger.today() : { date: null, tokens: 0, cost: 0, turns: 0 };
+      return {
+        date: today.date,
+        turns: today.turns,
+        tokens: today.tokens,
+        cost: today.cost,
+        tokensText: formatTokens(today.tokens),
+        costText: today.cost > 0 ? formatMoney(today.cost).replace('¥', '') : '0',
+        mode: 'ledger',
+      };
+    }
+    const est = await balanceDiff.estimateToday();
+    if (!est.ok) {
+      log('[balance-diff] 估算不可用:', est.reason);
+      return {
+        date: dk,
+        turns: 0,
+        tokens: 0,
+        cost: 0,
+        tokensText: '—',
+        costText: '0',
+        mode: 'none',
+        estimated: true,
+      };
+    }
+    log(
+      '[balance-diff] 今日消耗（估算）:',
+      est.amount.toFixed(2),
+      '元，基准',
+      est.baseline.toFixed(2),
+      '当前',
+      est.current.toFixed(2),
+      est.recharged ? '（检测到余额回升，按 0 计）' : '',
+    );
     return {
-      date: today.date,
-      turns: today.turns,
-      tokens: today.tokens,
-      cost: today.cost,
-      tokensText: formatTokens(today.tokens),
-      costText: today.cost > 0 ? formatMoney(today.cost).replace('¥', '') : '0',
+      date: est.date,
+      turns: 0,
+      tokens: 0,
+      cost: est.amount,
+      tokensText: '—',
+      costText: est.amount.toFixed(2),
+      mode: 'diff',
+      estimated: true,
+      recharged: est.recharged,
+      baseline: est.baseline,
+      current: est.current,
     };
   });
 
@@ -2845,6 +2937,23 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
     } catch (error) {
       balanceProxy = null;
       log('[balance] 未启动（端口被占用或出错）:', error.message);
+    }
+
+    /*
+     * 差额估算「今日消耗」的基准余额：趁余额接口可用先取一次。
+     * 失败不致命 —— 等用户真正点余额查询（账本又没数据）时，estimateToday
+     * 会再自愈重取；这里只是抢在一天开头把基准定下来。
+     */
+    try {
+      balanceDiff = new BalanceDiff({
+        file: path.join(app.getPath('userData'), PROBE_MODE ? 'balance-diff-probe.json' : 'balance-diff.json'),
+        fetchBalance: fetchCurrentBalance,
+        log: (...args) => log('[balance-diff]', ...args),
+      });
+      await balanceDiff.ensureBaseline();
+    } catch (error) {
+      balanceDiff = null;
+      log('[balance-diff] 初始化失败:', error.message);
     }
 
     // 开机自启在开发态与打包态路径不同，启动时用配置校正一次

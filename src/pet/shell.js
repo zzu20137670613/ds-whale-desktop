@@ -696,9 +696,17 @@
       const core = window.DshWhaleMoeCore;
       const tier = core && core.formatBalance ? core.formatBalance(amount, state.currency, false) : state.tier;
       const today = typeof api.getTodayUsage === 'function' ? await api.getTodayUsage() : null;
-      const spent = today
-        ? `今日共计消耗 ${today.tokensText} tokens，消费 ${today.costText} 元`
-        : '今日消耗还没统计出来';
+      // 主进程按 mode 给数据：ledger=DSH 实时账本；diff=余额差额估算的降级
+      let spent;
+      if (!today) {
+        spent = '今日消耗还没统计出来';
+      } else if (today.mode === 'diff') {
+        spent = `今日消费按余额差额估算约 ${today.costText} 元（未接 DSH 实时账本，仅供参考）`;
+      } else if (today.mode === 'none') {
+        spent = '今日消耗暂时还估算不出来';
+      } else {
+        spent = `今日共计消耗 ${today.tokensText} tokens，消费 ${today.costText} 元`;
+      }
       line = `当前余额为 ${state.currency} ${amount.toFixed(2)}，状态为${tier || '未知'}，${spent}`;
     }
 
@@ -830,7 +838,12 @@
       const hud = document.getElementById(HUD_ID);
       const target = event.target;
       if (target && typeof target.closest === 'function' && hud && hud.contains(target)) {
+        // 触发浮层内的行/按钮 → 立即把浮层收起来，别挡着头顶冒出的气泡；
+        // 同样设抑制，免得点完鼠标还停在原处，80ms 轮询把浮层又顶回来
         hoverSuppressed = true;
+        if (!hud.hidden) {
+          setHudVisible(false);
+        }
         return;
       }
       hoverSuppressed = true;

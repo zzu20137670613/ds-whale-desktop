@@ -537,6 +537,11 @@
     testText.append(probe);
     testRow.append(testText, testButton);
 
+    const diffNote = document.createElement('div');
+    diffNote.className = 'hint';
+    diffNote.textContent =
+      '「今日消耗」优先按 DSH 实时账本统计；接不到 DSH 时自动改用余额差额估算（今日首读余额 − 当前余额），精度到分、仅供参考。';
+
     group.append(
       textRow('天气城市', '留空则不查询天气（走 Open-Meteo，无需 Key）', prefText('weatherCity', ''), '例如 上海', (v) => prefWrite('weatherCity', v)),
       textRow('天气 API Key', '选填：仅当你的 Open-Meteo 需要 apikey 时填', prefText('weatherKey', ''), '留空即可', (v) => prefWrite('weatherKey', v)),
@@ -548,7 +553,8 @@
         'http://127.0.0.1:3020/balance',
         (v) => prefWrite('balanceEndpoint', v)
       ),
-      testRow
+      testRow,
+      diffNote
     );
   }
 

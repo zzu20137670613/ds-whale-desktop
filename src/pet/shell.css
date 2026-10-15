@@ -161,3 +161,17 @@ textarea {
 .shell-anim-video.is-on {
   opacity: 1;
 }
+
+/* webm 动作层放大 + 底部对齐：源素材是 16:9 宽画布、角色居中偏下。
+   scale(1.9) 实测偏大；缩小 1/4 = 变为当前的 3/4（1.9 × 0.75 = 1.425）。
+   宽度瘦身：1.28 偏胖、1.0 变形，取 1.1 折中。 */
+.shell-anim-video {
+  object-fit: cover;
+  transform: scale(1.1, 1.425);
+  transform-origin: center bottom;
+}
+
+/* 齿轮不再需要：悬停已改为直接联动浮层，右上角小齿轮删掉（隐藏而非移除，避免改 vendor） */
+[data-dsh-whale-gear-mini] {
+  display: none !important;
+}

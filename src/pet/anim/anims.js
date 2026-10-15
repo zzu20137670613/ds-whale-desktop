@@ -24,7 +24,8 @@
   if (!root.document) return;
   const doc = root.document;
 
-  /** 闲时动画时长：无互动多久后停播去睡觉（30 分钟） */
+  /** 3 分钟过渡期：刚唤醒/启动的头 3 分钟显示我们自己的 webp 姿势（不播 webm） */
+  const OUR_FIRST_MS = 3 * 60 * 1000;
   const IDLE_ANIM_MS = 30 * 60 * 1000;
 
   /** 动画 URL 前缀（server.js 已把 /anim/* 映射到 src/pet/anim/） */
@@ -96,7 +97,7 @@
     }
     video.play().catch(() => {});
     if (timer) root.clearTimeout(timer);
-    // 每段播完不精确对齐；用固定间隔轮换，保证"一直在动"
+    // 每段 13~25 秒随机轮换，保证"一直在动"又不急促
     timer = root.setTimeout(playNext, 13000 + Math.random() * 12000);
   }
 
@@ -109,31 +110,52 @@
       video.dataset.current = '';
       video.classList.remove('is-on');
     }
+    showFrame();
   }
 
   function showLayer() {
     if (!video) return;
     video.classList.add('is-on');
     video.style.opacity = '1';
+    // 互斥显示：webm 播放时隐藏上游 img 姿势层，避免两张叠着
+    hideFrame();
   }
 
   function hideLayer() {
     if (!video) return;
     video.classList.remove('is-on');
     video.style.opacity = '0';
+    showFrame();
   }
 
-  /** 互动：重置 AFK 计时 + 回到活泼状态 */
+  /** 隐藏上游 img 姿势层（webm 盖住时它必须消失——互斥） */
+  function hideFrame() {
+    const frame = doc.querySelector('[data-dsh-whale-frame]');
+    if (frame) frame.style.opacity = '0';
+  }
+
+  /** 恢复上游 img 姿势层显示（webm 退出/入睡时露出我们自己的 webp） */
+  function showFrame() {
+    const frame = doc.querySelector('[data-dsh-whale-frame]');
+    if (frame) frame.style.opacity = '';
+  }
+
+  /** 互动：重置 AFK 计时 + 回到活泼状态（过渡期内仍显示我们的姿势） */
   function touch() {
     lastTouch = Date.now();
     scheduleAfk();
-    if (visibility && !isBusy()) {
-      if (!active) {
-        active = true;
-        showLayer();
-      }
-      playNext();
+    // 唤醒：隐藏 webm、露出我们的姿势（若刚才在播则停掉）
+    if (active) {
+      active = false;
+      pauseLayer();
+      hideLayer();
     }
+    // 3 分钟后由心跳自动接过开播（这里不主动 playNext）
+  }
+
+  /** 是否已过入睡点（超过 30 分钟无互动） */
+  function overSleep() {
+    return Date.now() - lastTouch >= IDLE_ANIM_MS;
   }
 
   /** 后台 AFK 计时：到点停止随机动画（露出睡眠姿势） */
@@ -177,14 +199,25 @@
   }
 
   function boot() {
-    // 可见性轮询：窗口显示才播放
+    // 统一心跳（1.5s）：维护 可见性 / 忙闲 / 过渡期 / 入睡点 → 决定 播/停/睡
     setInterval(() => {
       const vis = isVisible();
+      const busy = isBusy();
+      const sleep = overSleep();
+      const inOurPhase = Date.now() - lastTouch < OUR_FIRST_MS; // 唤醒/启动后头 3 分钟
       if (vis !== visibility) {
         visibility = vis;
-        if (vis && active) { showLayer(); playNext(); }
-        else if (!vis) pauseLayer();
+        if (!vis) { pauseLayer(); return; }
       }
+      if (!visibility) return;
+      if (busy || sleep || inOurPhase) {
+        // 忙 / 已过入睡点 / 头 3 分钟：露出上游姿势（我们自己的 webp / afk / sleep）
+        if (active) { active = false; pauseLayer(); hideLayer(); }
+        return;
+      }
+      // 闲且活跃：确保播放
+      if (!active) { active = true; showLayer(); }
+      if (!timer) playNext();
     }, 1500);
 
     // 互动监听（强互动 = 重置 30 分钟计时 + 唤醒活泼）
@@ -198,25 +231,14 @@
     // 上游说话 = 强互动
     doc.addEventListener('whale-moe-speak', () => touch(), true);
 
-    // 工作态出现 → 立刻停（busy 轮询）
-    setInterval(() => {
-      if (!active) return;
-      if (isBusy()) {
-        pauseLayer();
-        hideLayer();
-        active = false;
-      } else if (!afkTimer) {
-        active = true;
-        showLayer();
-        playNext();
-      }
-    }, 2000);
-
     visibility = isVisible();
-    active = true;
-    showLayer();
     scheduleAfk();
-    playNext();
+    // 初始若闲且活跃则立即开播（busy 由心跳接管暂停）
+    if (visibility && !isBusy() && !overSleep()) {
+      active = true;
+      showLayer();
+      playNext();
+    }
   }
 
   // 弱信号占位：鼠标移动只证明"人在"，但不动入睡计时（保留，防止未来扩展时误用）

@@ -53,6 +53,25 @@ $newExe = Join-Path $appDir "$name.exe"
 if (Test-Path $newExe) { Remove-Item -Force $newExe }
 Rename-Item -Force -Path $exe -NewName "$name.exe"
 
+# 3.5 替换 exe 图标（深海回响）—— Electron 默认图标是它自己的原子标，必须用
+#     rcedit 改写 PE 资源里的图标。rcedit 随 electron-builder 的 winCodeSign 缓存分发，
+#     本机不装它也常见，所以找不到就跳过并告警（不阻断打包）。
+$iconSrc = Join-Path $root 'build\icon.ico'
+if (Test-Path $iconSrc) {
+  $rcedit = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'electron-builder\Cache\winCodeSign') `
+    -Recurse -Filter 'rcedit-x64.exe' -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+  if ($rcedit) {
+    & $rcedit $newExe --set-icon $iconSrc | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Warning "rcedit 设置图标失败（exit $LASTEXITCODE），exe 仍是 Electron 默认图标" }
+    else { Write-Host "  icon: 已写入 $iconSrc (rcedit)" }
+  } else {
+    Write-Warning "未找到 rcedit-x64.exe（electron-builder\Cache\winCodeSign），跳过 exe 图标替换"
+  }
+} else {
+  Write-Warning "未找到 build\icon.ico，跳过 exe 图标替换"
+}
+
 # 4. zip (keep the top-level <name>/ folder inside the zip)
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::CreateFromDirectory($staging, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)

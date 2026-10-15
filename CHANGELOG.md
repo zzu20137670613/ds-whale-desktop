@@ -26,6 +26,13 @@
   顶浮层，齿轮不再需要（壳层 CSS 隐藏，不动 vendor）。
 - **服务器**：`src/server.js` 补 `.webm` MIME + `/anim/*` 路由（映射到 `src/pet/anim/`）。
 
+### 品牌图标
+
+- **exe 图标**：`build/icon.ico` 换成鲸鱼娘女仆装贴纸（多尺寸 16~256、透明底），
+  打包时由 rcedit 写入 PE 资源。
+- **托盘图标**：优先用 `src/assets/tray.png`（同一张贴纸、透明底），
+  找不到才退回上游 webp / 手绘位图。
+
 ### 素材与许可
 
 本次新增素材来自 MIT 许可的第三方仓库，已在 `THIRD-PARTY.md` 记名。

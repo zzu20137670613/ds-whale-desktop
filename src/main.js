@@ -61,6 +61,7 @@ let lastRateSource = '';
 
 const ROOT = path.join(__dirname, '..');
 const PET_DIR = path.join(__dirname, 'pet');
+const ASSETS_DIR = path.join(__dirname, 'assets');
 const VENDOR_DIR = path.join(ROOT, 'vendor', 'whale');
 
 // 必须在 app ready 之前定名：否则 userData 目录会用 productName（中文），
@@ -185,8 +186,17 @@ function saveConfig() {
 }
 
 // ---------------------------------------------------------------- 托盘图标
-/** 优先用上游立绘当图标；webp 不被 nativeImage 支持时退回手绘位图。 */
+/** 托盘图标：优先用我们自己的贴纸立绘（src/assets/tray.png），
+ *  其次退回上游立绘 webp，都没有才用手绘位图。 */
 function buildTrayIcon() {
+  const trayPng = path.join(ASSETS_DIR, 'tray.png');
+  if (fs.existsSync(trayPng)) {
+    const image = nativeImage.createFromPath(trayPng);
+    if (!image.isEmpty()) {
+      return image.resize({ width: 16, height: 16 });
+    }
+  }
+
   const candidates = [
     'dsh-whale-home-peek.webp',
     'dsh-whale-state-home.webp',

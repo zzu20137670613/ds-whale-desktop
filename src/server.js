@@ -26,6 +26,7 @@ const MIME = {
   '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.webp': 'image/webp',
+  '.webm': 'video/webm',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.svg': 'image/svg+xml',
@@ -162,6 +163,11 @@ function startPetServer({ petDir, vendorDir, port, stateProvider, log = () => {}
     // 壳自己的页面资源：/pet/*
     if (pathname.startsWith('/pet/')) {
       return sendFile(res, safeJoin(petDir, pathname.slice('/pet/'.length)));
+    }
+
+    // 闲时动作动画（dsh-pet 移植）：/anim/* → src/pet/anim/*
+    if (pathname.startsWith('/anim/')) {
+      return sendFile(res, safeJoin(path.join(petDir, 'anim'), pathname.slice('/anim/'.length)));
     }
 
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });

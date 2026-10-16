@@ -236,7 +236,19 @@ function startPetServer({ petDir, vendorDir, port, stateProvider, log = () => {}
         resolve({
           url: `http://127.0.0.1:${actual}`,
           port: actual,
-          close: () => new Promise((r) => server.close(() => r())),
+          /*
+           * 关服务时先强制断开所有连接。
+           *
+           * 为什么必须：Node 的 fetch（undici）默认用 keep-alive 连接池，用完不主动关。
+           * 于是 server.close() 会一直等这些连接自然结束 —— 回调永不触发，await 卡死，
+           * 表现为"脚本跑完了却不退出，留下一个后台命令"（scripts/anim-smoke.cjs 就踩过）。
+           */
+          close: () => new Promise((r) => {
+            if (typeof server.closeAllConnections === 'function') {
+              server.closeAllConnections();
+            }
+            server.close(() => r());
+          }),
         });
       });
     };

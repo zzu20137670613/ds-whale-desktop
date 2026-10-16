@@ -26,5 +26,10 @@ const { startPetServer } = require(path.join(root, 'src', 'server'));
   }
   await srv.close();
   console.log(fail === 0 ? 'ALL PASS' : `FAILED=${fail}`);
-  process.exit(fail === 0 ? 0 : 1);
+  /*
+   * 用 exitCode 而不是 process.exit()：Windows 上进程退出时若还有未收尾的异步 I/O，
+   * process.exit() 会和它竞态，触发 libuv 断言（async.c line 76）而异常"崩溃退出"。
+   * 服务已 close，事件循环自然会排空 —— 设好退出码让它自己干净地结束即可。
+   */
+  process.exitCode = fail === 0 ? 0 : 1;
 })();

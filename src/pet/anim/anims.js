@@ -59,6 +59,9 @@
   let lastTouch = Date.now(); // 上次互动
   let active = false;
   let visibility = false;
+  let manualAt = 0; // 右键点播动作的时间戳：点播盖过「过渡期露立绘」，不被 idle 心跳打断
+  const MANUAL_HOLD_MS = 60 * 1000; // 点播后 1 分钟内视为"手动播放中"
+  const manualActive = () => Date.now() - manualAt < MANUAL_HOLD_MS;
 
   function pickAction() {
     return ACTION_POOL[Math.floor(Math.random() * ACTION_POOL.length)];
@@ -210,8 +213,14 @@
         if (!vis) { pauseLayer(); return; }
       }
       if (!visibility) return;
-      if (busy || sleep || inOurPhase) {
-        // 忙 / 已过入睡点 / 头 3 分钟：露出上游姿势（我们自己的 webp / afk / sleep）
+      if (busy || sleep) {
+        // 忙 / 已过入睡点：露出上游姿势（我们自己的 webp / afk / sleep）——工作与睡觉永远优先
+        if (active) { active = false; pauseLayer(); hideLayer(); }
+        return;
+      }
+      // 过渡期（唤醒/启动后头 3 分钟）露立绘；但【右键点播】盖过它——
+      // 用户明确要看某段动作时，1 分钟内不让心跳把它打断
+      if (inOurPhase && !manualActive()) {
         if (active) { active = false; pauseLayer(); hideLayer(); }
         return;
       }
@@ -272,15 +281,25 @@
   };
 
   function playMenuAction(name) {
+    // 右键点播 = 用户明确要看这个动作：重置入睡计时（点播也是互动），
+    // 标记"手动播放中"盖过过渡期，然后立刻把这段 webm 显示出来。
+    // 注意：这里**不能**走 touch()——touch() 是"互动即停动画、露出立绘"的
+    // 反向逻辑，它会把 active 置 false 并把刚 Show 出来的图层又 hide 掉
+    // （这正是"点播了动作却只看到立绘"的根因）。
+    lastTouch = Date.now();
+    scheduleAfk();
+    manualAt = Date.now();
     active = true;
     showLayer();
-    touch();
     if (!video) return;
     const url = ANIM_BASE + encodeURIComponent(name) + '.webm';
     video.dataset.current = name;
     video.src = url;
     video.load();
     video.play().catch(() => {});
+    if (timer) root.clearTimeout(timer);
+    // 点播也走随机链节奏：13~25 秒后由下一段随机动作接班
+    timer = root.setTimeout(playNext, 13000 + Math.random() * 12000);
   }
 
   /** 在菜单里插入「动作」按钮；点开后把菜单内容换成分类树（面包屑可返回） */

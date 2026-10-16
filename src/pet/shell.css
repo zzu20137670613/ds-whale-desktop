@@ -175,3 +175,22 @@ textarea {
 [data-dsh-whale-gear-mini] {
   display: none !important;
 }
+
+/* ===== 右键菜单「动作树」滚动 =====
+   上游 `[data-dsh-whale-context]` 没有任何 max-height/overflow，
+   动作分类里玩耍 27 项等长列表会直接溢出屏幕底部、底下的选不到。
+   这里把菜单高度固定（≈ 默认右键菜单约 7 项的高度），超出部分滚着选。 */
+[data-dsh-whale-context] {
+  max-height: min(300px, 42vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 滚动条细一点，不抢菜单本体观感 */
+  scrollbar-width: thin;
+}
+[data-dsh-whale-context]::-webkit-scrollbar {
+  width: 6px;
+}
+[data-dsh-whale-context]::-webkit-scrollbar-thumb {
+  background: rgb(0 0 0 / 25%);
+  border-radius: 3px;
+}

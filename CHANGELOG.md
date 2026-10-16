@@ -24,6 +24,18 @@
   「读不到余额 · 上次 HH:MM」；读到则副行追加「更新 HH:MM」。
   一眼可分清「余额真的是 0」还是「接口超时了」。
 
+### 修复：右键菜单「动作」点播不显示 + 长列表不可滚
+
+- **点播动作只看到立绘（改）**：`playMenuAction` 走了 `touch()`——而 `touch()` 是
+  「互动即停动画、露出立绘」的反向逻辑，会把刚 Show 出的 webm 图层又藏回去；
+  且刷新互动时间后「过渡期露立绘」又把它打断。修法：点播走独立路径（重置入睡
+  计时 + `manualAt` 标记），心跳里「工作/入睡」仍无条件优先，「过渡期」则被
+  点播盖住 1 分钟——点播一定看得到动作。见 `src/pet/anim/anims.js`。
+- **动作多、下方显示不出来（改）**：上游右键菜单没有 max-height/overflow，
+  玩耍 27 项直接溢出屏幕底。给 `[data-dsh-whale-context]` 加
+  `max-height: min(300px, 42vh)` + `overflow-y: auto`，菜单高度与初始右键菜单
+  相当，超出部分滚着选。见 `src/pet/shell.css`。
+
 ### 其它
 
 - 调试探针（`/__shell/state`）新增 `signinHook`/`balanceSyncHook`/`heartbeat` 字段，

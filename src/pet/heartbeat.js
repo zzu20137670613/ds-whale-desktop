@@ -14,12 +14,12 @@
  *      接口超时后上游只把 ok 置 false，既不重试也不记账，界面就一直空着。
  *
  * 做法（**绝不累加时间，只看绝对日期**）：
- *   · 每分钟一个 tick，读**本地日期**和 localStorage 的 `whale-moe:lastSignin` 比较，
+ *   · 每半小时一个 tick，读**本地日期**和 localStorage 的 `whale-moe:lastSignin` 比较，
  *     不相等就补签（补签逻辑委托给注入进上游的 `__dshWhaleMoeSigninToday`，
  *     它复用上游自己的 applyGrowth/applyQuestSignal/syncWeekSignin，不重写养成规则）；
  *   · 同一个 tick 里顺带刷余额（失败重试 + 记下"最后一次成功时间"）；
  *   · 再挂 visibilitychange / focus / pageshow —— 睡眠唤醒或窗口重新可见时**立刻补判一次**，
- *     不用等到下一个整分钟。
+ *     不用等到下一个周期。
  *
  * vendor 零改动：补签与余额同步的钩子由 src/server.js 在**服务时**注入（见 MASCOT_PATCH）。
  */
@@ -29,8 +29,10 @@
 
   const api = window.whaleShell || { log: () => {} };
 
-  /** 心跳周期：一分钟。 */
-  const TICK_MS = 60 * 1000;
+  /** 心跳周期：半小时。
+   *  签到只关心"日期有没有变"（一天才一次），余额失败另有 10s/30s 退避重试，
+   *  所以主 tick 不需要高频——半小时足够，常驻进程的定时器开销也最低。 */
+  const TICK_MS = 30 * 60 * 1000;
   /** 签到日期键（与上游 dsh-whale-moe.js 的 dayKeyOf 同一格式：不补零）。 */
   const SIGNIN_KEY = 'whale-moe:lastSignin';
   /** 余额失败后的重试节奏（毫秒）；用完后保持最后一档。 */
@@ -185,10 +187,10 @@
   // 启动即判一次（等价于上游"启动时判一次"，但之后不会就此停摆）
   tick('boot');
 
-  // 每分钟一个 tick：日期检查 + 余额刷新 + 超时判定都在这一个地方做
+  // 每半小时一个 tick：日期检查 + 余额刷新 + 超时判定都在这一个地方做
   window.setInterval(() => tick('interval'), TICK_MS);
 
-  // 睡眠唤醒 / 窗口重新可见 / 切回前台 → 立刻补判一次，不等下一个整分钟
+  // 睡眠唤醒 / 窗口重新可见 / 切回前台 → 立刻补判一次，不等下一个周期
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
       tick('visible');

@@ -63,6 +63,22 @@
   const MANUAL_HOLD_MS = 60 * 1000; // 点播后 1 分钟内视为"手动播放中"
   const manualActive = () => Date.now() - manualAt < MANUAL_HOLD_MS;
 
+  /*
+   * 自检快照（与上游 __dshWhaleMoeDebug、心跳 __dshWhaleHeartbeat 同一约定）。
+   * 入睡计时是"距上次互动的绝对时间差"，外部脚本没法真等 30 分钟来验证，
+   * 只能把内部量读出来断言（比如"DSH 干活时 lastTouch 有没有被刷新"）。
+   */
+  window.__dshWhaleAnimDebug = {
+    get lastTouch() { return lastTouch; },
+    get sleepIn() { return IDLE_ANIM_MS - (Date.now() - lastTouch); },
+    get active() { return active; },
+    get manualActive() { return manualActive(); },
+    overSleep,
+    isBusy,
+    idleMs: IDLE_ANIM_MS,
+    ourFirstMs: OUR_FIRST_MS,
+  };
+
   function pickAction() {
     return ACTION_POOL[Math.floor(Math.random() * ACTION_POOL.length)];
   }
@@ -165,10 +181,13 @@
   function scheduleAfk() {
     if (afkTimer) root.clearTimeout(afkTimer);
     afkTimer = root.setTimeout(() => {
+      afkTimer = null;
+      // 到点再确认一次"真的静默够久"：期间若被人互动、或 DSH 一直在干活
+      // （见心跳里的 busy 分支会刷新 lastTouch），这里就不该睡。
+      if (!overSleep()) return;
       active = false;
       pauseLayer();
       hideLayer();
-      afkTimer = null;
     }, IDLE_ANIM_MS);
   }
 
@@ -206,6 +225,19 @@
     setInterval(() => {
       const vis = isVisible();
       const busy = isBusy();
+      /*
+       * DSH 干活也算「互动」：上游 thinking / tool / success / failure 都是她在被调用，
+       * 不是"没人理她"。若不刷新入睡计时，一个长任务跑满 30 分钟她就会睡着。
+       *
+       * 用 busy 而不是"只听花费播报"：她播报本次花费恰好发生在任务收尾（success 态），
+       * 所以这一条已覆盖那个触发点，并且额外覆盖了花费低于播报阈值（不播报）的小任务。
+       *
+       * afkTimer 已在到点时把自己清空（null），这里补挂一次，保持"静默计时"常驻。
+       */
+      if (busy) {
+        lastTouch = Date.now();
+        if (!afkTimer) scheduleAfk();
+      }
       const sleep = overSleep();
       const inOurPhase = Date.now() - lastTouch < OUR_FIRST_MS; // 唤醒/启动后头 3 分钟
       if (vis !== visibility) {

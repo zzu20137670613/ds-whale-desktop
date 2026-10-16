@@ -2,6 +2,33 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.13.1] - 2026-10-16
+
+### 修复：长驻进程跨天不再失效（心跳层）
+
+两个 bug 是同一类病根：**长驻进程 + 跨天 + 依赖外部接口**。
+
+- **跨天不自动签到**：上游的签到逻辑 `if (!memory.lastGrowthTick)` 只在进程的
+  **第一次 reconcile** 执行 —— 一个进程只签一次，电脑不关机、桌宠长驻，
+  `whale-moe:lastSignin` 就永远停在昨天。修法：新增 `src/pet/heartbeat.js` 心跳层，
+  每分钟读**本地绝对日期**与 `lastSignin` 比较，不等就补签（补签逻辑经
+  `src/server.js` 注入的 `__dshWhaleMoeSigninToday` 复用上游自己的
+  `applyGrowth`/`applyQuestSignal`/`syncWeekSignin`，不改养成规则）；
+  再挂 `visibilitychange`/`focus`/`pageshow` —— 系统睡眠唤醒或窗口回到前台时
+  **立刻补判**，不等下一个整分钟。`vendor/` 依旧零改动。
+- **余额/花费数字消失**：动作是事件驱动、数字是轮询拉取，两者寿命不同，
+  接口超时后上游只把 `ok` 置 false，既不重试也不记账。修法：心跳在同一分钟
+  tick 里顺带刷新余额（失败按 10s → 30s 重试，并记"最后一次成功时间"）；
+  同源钩子 `__dshWhaleMoeSyncBalance` 复用上游 `applyBalancePayload` 保证形状一致。
+- **渲染层不留白**：余额读不到时金额位显示「—」+ 副行标注
+  「读不到余额 · 上次 HH:MM」；读到则副行追加「更新 HH:MM」。
+  一眼可分清「余额真的是 0」还是「接口超时了」。
+
+### 其它
+
+- 调试探针（`/__shell/state`）新增 `signinHook`/`balanceSyncHook`/`heartbeat` 字段，
+  自检脚本与外部断言可确认钩子注入与心跳运行状态。
+
 ## [0.13.0] - 2026-10-15
 
 ### 新增：闲时动作动画层（移植自 dsh-pet）

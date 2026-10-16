@@ -38,5 +38,8 @@
   <script src="/pet/shell.js"></script>
   <!-- 闲时动作动画层（dsh-pet 移植）：随机 webm 舞蹈 + 30 分钟无互动入睡 -->
   <script src="/pet/anim/anims.js"></script>
+  <!-- 心跳层：每分钟查绝对日期补签 + 余额刷新重试（治"长驻进程跨天 + 接口超时"）。
+       必须在 mascot.js / shell.js 之后：它用注入进上游的补签钩子和壳层的浮层刷新入口。 -->
+  <script src="/pet/heartbeat.js"></script>
 </body>
 </html>

@@ -389,6 +389,12 @@
     return { main: `${text.emoji} ${city} ${Math.round(current.temp)}°`, sub: text.label, tone: 'ok' };
   }
 
+  /** HH:MM（本地）——浮层里标注"数据是什么时候的"。 */
+  function clockOf(ms) {
+    const d = new Date(ms);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
   function hudReadBalance() {
     let enabled = false;
     try {
@@ -400,16 +406,26 @@
       return { main: '未启用余额', sub: '点这里去设置', tone: 'muted' };
     }
     const state = window.__dshWhaleMoeBalance;
-    if (!state || !state.ok) {
-      return { main: '余额不可用', sub: '余额接口无响应', tone: 'muted' };
-    }
+    const hb = (window.__dshWhaleHeartbeat && window.__dshWhaleHeartbeat.balance) || null;
     const core = window.DshWhaleMoeCore;
-    const amount = Number(state.amount);
+    const amount = state && state.ok ? Number(state.amount) : NaN;
+    /*
+     * 渲染层不留白：读不到时金额位给固定占位符「—」，副行说清是"没读到"还是"读到 0"。
+     * 否则金额位空白，人根本分不出「余额真的是 0」和「接口超时了」。
+     * 余额接口超时是常态（见 balance-proxy 的 upstream failed 日志），
+     * 所以顺带把心跳层记的"最后一次成功时间"标出来。
+     */
+    if (!Number.isFinite(amount)) {
+      const since = hb && hb.lastOkAt ? clockOf(hb.lastOkAt) : '';
+      const sub = since ? `读不到余额 · 上次 ${since}` : '余额接口无响应';
+      return { main: '💰 —', sub, tone: 'muted' };
+    }
     // 金额要精确到分：上游的 formatBalance(…, false) 只给档位措辞（充裕/紧张…），
     // 所以把确切数字放到主行，档位词退到副行。
-    const shown = Number.isFinite(amount) ? amount.toFixed(2) : String(state.amount);
     const tier = core && core.formatBalance ? core.formatBalance(amount, state.currency, false) : state.tier;
-    return { main: `💰 ${state.currency} ${shown}`, sub: tier || '', tone: 'ok' };
+    const since = hb && hb.lastOkAt ? clockOf(hb.lastOkAt) : '';
+    const sub = [tier || '', since ? `更新 ${since}` : ''].filter(Boolean).join(' · ');
+    return { main: `💰 ${state.currency || 'CNY'} ${amount.toFixed(2)}`, sub, tone: 'ok' };
   }
 
   /*
@@ -691,7 +707,12 @@
     if (!enabled) {
       line = '余额查询还没启用呢，去设置里打开「显示余额」吧';
     } else if (!state || state.ok !== true || !Number.isFinite(amount)) {
-      line = '余额接口没有响应，鲸鲸查不到余额…先看看设置里的余额接口吧';
+      // 顺带报"最后一次成功时间"，和浮层的占位符口径一致：读不到 ≠ 余额是 0
+      const hb = (window.__dshWhaleHeartbeat && window.__dshWhaleHeartbeat.balance) || null;
+      const since = hb && hb.lastOkAt ? clockOf(hb.lastOkAt) : '';
+      line = since
+        ? `余额接口没有响应，鲸鲸查不到余额…上次成功是 ${since}。先看看设置里的余额接口吧`
+        : '余额接口没有响应，鲸鲸查不到余额…先看看设置里的余额接口吧';
     } else {
       const core = window.DshWhaleMoeCore;
       const tier = core && core.formatBalance ? core.formatBalance(amount, state.currency, false) : state.tier;
@@ -765,6 +786,10 @@
     // 顺带保证天气是新的（新鲜时零开销，直接返回）
     ensureWeatherFresh(false);
   }
+
+  // 心跳层（src/pet/heartbeat.js）刷新完余额后要立刻让浮层重画。
+  // 两个 IIFE 不互相 require，用 window 上挂一个入口即可。
+  window.__dshWhaleRefreshHud = refreshHud;
 
   function setHudVisible(visible) {
     const hud = ensureHud();
@@ -1017,6 +1042,11 @@
        * "钩子没注入"和"话说出来了但看不见"，把可用性带出来就能一眼分辨。
        */
       sayHook: typeof window.__dshWhaleMoeSay === 'function',
+      // 心跳层的两个补丁钩子 + 快照：和 sayHook 同理，把"钩子到底注入没有"
+      // 和"这一分钟心跳干了什么"带出来，外部断言就不用猜。
+      signinHook: typeof window.__dshWhaleMoeSigninToday === 'function',
+      balanceSyncHook: typeof window.__dshWhaleMoeSyncBalance === 'function',
+      heartbeat: window.__dshWhaleHeartbeat || null,
     });
   }
 

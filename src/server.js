@@ -63,12 +63,16 @@ function sendFile(res, file) {
  * 取文本 → 字符串替换 → 再交给浏览器 —— **磁盘上的 vendor/whale 一个字都不改**，
  * 所以 `npm run sync:upstream` 不会把补丁冲掉。
  *
- * 补丁做两件事：
+ * 补丁做三件事：
  *   1. `__dshWhaleMoeSay(line, holdMs)` —— 说话；
  *   2. **打完字之后**才开始算停留时间。上游是"开始说话时"就设 4.5 秒的到期时间，
  *      而台词是逐字打的（标点 260ms、每 5 字 130ms、其余 64ms），
  *      像余额播报那样四十多字的句子光打字就要 4 秒多 —— 打完基本就到点了，
  *      于是长句几乎看不清。这里改成等 `typingTimer` 空了再计时。
+ *   3. `__dshWhaleMoeSigninToday()` / `__dshWhaleMoeSyncBalance()` —— 跨天补签与余额同步，
+ *      给 src/pet/heartbeat.js 的心跳层调用。上游的签到是 `if (!memory.lastGrowthTick)`
+ *      即**一个进程只签一次**，长驻进程跨天永远不会补签；这里把上游自己的那段逻辑
+ *      （applyGrowth + applyQuestSignal + syncWeekSignin）原样暴露出来，心跳按绝对日期补判。
  *
  * 锚点 `root.__dshWhaleMoeStarted = true;` 在 start() 里且全文唯一；
  * 万一上游改掉了这个锚点，这里会原样返回并把 patched 标成 false，
@@ -86,6 +90,48 @@ const MASCOT_PATCH = `/* shell-patched: 说话钩子（holdMs = 打完字后停�
         root.__dshWhaleMoeBubbleHold = null;
         memory.bubbleHideAt = Date.now() + hold;
       }, 120);
+    };
+    /* shell-patched: 跨天补签（心跳层调用；复用上游自己的签到逻辑，不重写养成规则） */
+    root.__dshWhaleMoeSigninToday = function () {
+      try {
+        if (!growth) loadGrowth();
+        var now = Date.now();
+        var today = dayKeyOf(now);
+        if (growth.lastSignin === today) {
+          saveGrowth(); /* 内存已是今天、磁盘可能落后：顺手补写一次，避免心跳反复重试 */
+          return { ok: true, already: true, date: today, streak: growth.signinStreak };
+        }
+        var out = applyGrowth({ type: "signin" }, now, 0);
+        applyQuestSignal("signin", 1);   /* 任务池的「今日签到」；只在跨天那一刻调，不会重复加 */
+        syncWeekSignin(now);
+        saveGrowth();
+        if (out && out.unlocks && out.unlocks.length) announceUnlocks(out.unlocks);
+        return { ok: true, signed: true, date: today, streak: growth.signinStreak };
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e) };
+      }
+    };
+    /* shell-patched: 余额同步（心跳层调用；复用上游 applyBalancePayload，保证形状一致） */
+    root.__dshWhaleMoeSyncBalance = function () {
+      return new Promise(function (resolve) {
+        try {
+          if (!balanceEnabled()) { resolve({ ok: false, reason: "disabled" }); return; }
+          balanceState.at = Date.now(); /* 与上游共用节流时间：和它自己的 60 秒轮询不会重复拉 */
+          root.fetch(BALANCE_ENDPOINT, { cache: "no-store", credentials: "omit" })
+            .then(function (res) {
+              if (!res || !res.ok) throw new Error("http-" + (res ? res.status : "none"));
+              return res.json();
+            })
+            .then(function (data) {
+              applyBalancePayload(data);
+              if (!balanceState.ok) throw new Error("payload-not-ok");
+              resolve({ ok: true, amount: balanceState.amount, currency: balanceState.currency, tier: balanceState.tier, at: balanceState.at });
+            })
+            .catch(function (e) { resolve({ ok: false, reason: String((e && e.message) || e) }); });
+        } catch (e) {
+          resolve({ ok: false, reason: String((e && e.message) || e) });
+        }
+      });
     };
     ${MASCOT_PATCH_ANCHOR}`;
 let mascotCache = null;

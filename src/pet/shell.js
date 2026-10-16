@@ -1047,6 +1047,23 @@
       signinHook: typeof window.__dshWhaleMoeSigninToday === 'function',
       balanceSyncHook: typeof window.__dshWhaleMoeSyncBalance === 'function',
       heartbeat: window.__dshWhaleHeartbeat || null,
+      /*
+       * 闲时动作层（anims.js）的快照：把"DSH 干活时 lastTouch 有没有被刷新"带出来。
+       *
+       * 为什么要暴露它：入睡规则（30 分钟无互动）整条跑在渲染进程里，"她到底算不算睡了"
+       * 只有这个内部量能回答 —— 否则只能靠肉眼看立绘，而"静止的工作姿势"和"睡觉"
+       * 在小尺寸下几乎分不出来（这一条正是踩过的坑）。
+       *   sleepInMs —— 距入睡还剩多少毫秒（负数=已过入睡点）
+       */
+      anim: window.__dshWhaleAnimDebug
+        ? {
+            lastTouch: window.__dshWhaleAnimDebug.lastTouch,
+            sleepInMs: Math.round(window.__dshWhaleAnimDebug.sleepIn),
+            active: window.__dshWhaleAnimDebug.active,
+            busy: window.__dshWhaleAnimDebug.isBusy(),
+            dshWorking: window.__dshWhaleAnimDebug.dshWorking,
+          }
+        : null,
     });
   }
 

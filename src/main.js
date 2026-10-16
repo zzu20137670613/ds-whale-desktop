@@ -870,6 +870,13 @@ function runDshProbe() {
         const shown = layers.filter((n) => n.style.display !== 'none' && n.getAttribute('src'));
         const pick = shown.length ? shown[shown.length - 1] : layers[0];
         const src = pick ? (pick.getAttribute('src') || '') : '';
+        /*
+         * 闲时动作层的快照。"DSH 干活算互动"这条规则落在 anims.js 里，
+         * 它的效果就是 sleepInMs 保持接近满值（每次 tick 刷新 lastTouch）——
+         * 不复位的话它会一路滑向 0 再变负（= 睡着了）。这条断言比看立绘可靠得多：
+         * "静止的工作姿势"和"睡觉"在小尺寸下肉眼几乎分不出来。
+         */
+        const anim = window.__dshWhaleAnimDebug || null;
         return {
           state: d.state || null,
           pose: d.pose || null,
@@ -878,6 +885,7 @@ function runDshProbe() {
           sprite: src ? src.split('/').pop().split('?')[0] : null,
           layerCount: layers.length,
           signals: host ? host.innerHTML.replace(/\\s+/g, ' ').trim() : null,
+          anim: anim ? { lastTouch: anim.lastTouch, sleepInMs: Math.round(anim.sleepIn), active: anim.active, animBusy: anim.isBusy(), dshWorking: anim.dshWorking, feeds: anim.activityFeeds } : null,
         };
       })()`);
       const label = item.tool ? `${item.state}/${item.tool}` : item.state;

@@ -73,6 +73,11 @@
     get sleepIn() { return IDLE_ANIM_MS - (Date.now() - lastTouch); },
     get active() { return active; },
     get manualActive() { return manualActive(); },
+    /* IPC 直报的工作态（见 isBusy）。与 DOM 那份可能不同 —— 不同就说明 DOM 那路断了。 */
+    get dshWorking() { return dshWorking; },
+    /* 向上游转发"有人在活动"的累计次数：DSH 忙时它必须持续增长，
+       否则说明上游的 afk 钳制没生效（人一旦闲置 3 分钟就会被放倒睡）。 */
+    get activityFeeds() { return activityFeeds; },
     overSleep,
     isBusy,
     idleMs: IDLE_ANIM_MS,
@@ -90,13 +95,45 @@
     return r.width > 1 && r.height > 1 && getComputedStyle(fr).visibility !== 'hidden';
   }
 
+  /**
+   * DSH 是否正在干活。**直接从主进程的 IPC 拿**（whaleShell.onDshState），
+   * 而不是只靠上游渲染出来的 `data-dsh-whale-busy` / 状态签。
+   *
+   * 为什么要多这一路：上游那份标记是它 `reconcile()` 的产物，而我们够不着它的渲染时机——
+   * 它节流、或者 render 抛错后（`safeReconcile` 会 disconnect observer 并移除根节点）
+   * 就再也不会更新，`data-dsh-whale-busy` 会永远停在错的值上，**而且不报错**。
+   * 那时"DSH 在干活"这件事在页面里就凭空消失了，桌宠只会一路睡过去。
+   * 直接订阅 IPC 就没有这个中间环节：状态一到就复位入睡计时。
+   */
+  let dshWorking = false;
+  /** 已向上游转发的「有人在活动」次数（钳制 afk 用）。只用于自检断言。 */
+  let activityFeeds = 0;
+
   /** 桌宠当前是否在忙（上游 BUSY_STATES：thinking/tool/success/failure/curious…） */
   function isBusy() {
+    if (dshWorking) return true;
     const chip = doc.querySelector('[data-dsh-whale-chip]');
     if (chip) return true;
     const rootNode = doc.querySelector('[data-dsh-whale-root]');
     if (rootNode && rootNode.getAttribute('data-dsh-whale-busy') === 'true') return true;
     return false;
+  }
+
+  /*
+   * 干活即互动：DSH 一进入工作态就**立刻**复位入睡计时，
+   * 不等 1.5s 心跳、也不等上游把它渲染成 DOM 标记。
+   * 空闲（idle/hidden）才放行，让 30 分钟静默计时正常往下走。
+   */
+  const shellApi = root.whaleShell;
+  if (shellApi && typeof shellApi.onDshState === 'function') {
+    shellApi.onDshState((payload) => {
+      const st = payload && payload.state;
+      dshWorking = Boolean(st) && st !== 'idle' && st !== 'hidden';
+      if (dshWorking) {
+        lastTouch = Date.now();
+        if (!afkTimer) scheduleAfk();
+      }
+    });
   }
 
   function playNext() {
@@ -237,6 +274,20 @@
       if (busy) {
         lastTouch = Date.now();
         if (!afkTimer) scheduleAfk();
+        /*
+         * 把「机器在干活」折算成「人在活动」，喂给上游。
+         *
+         * 上游自己还有一条**独立的** afk 判定（AFK_MS = 3 分钟），
+         * 它只认真实指针/键盘（见 vendor start() 里挂的 onUserActivity），
+         * DSH 干活不算 —— 于是她连着跑几分钟、turn 一停，立刻被放倒睡
+         * （"ZZZ……梦里也在帮主人数 bug🐑"）。**那才是"干活时她还在睡"的真身**，
+         * 和我们这条 30 分钟入睡计时是两套机制，必须都管住。
+         * 1.5 秒喂一次，远密于 3 分钟的阈值，中间任何 turn 间隙都盖得住。
+         */
+        if (typeof root.__dshWhaleMoeUserActivity === 'function') {
+          root.__dshWhaleMoeUserActivity();
+          activityFeeds += 1;
+        }
       }
       const sleep = overSleep();
       const inOurPhase = Date.now() - lastTouch < OUR_FIRST_MS; // 唤醒/启动后头 3 分钟

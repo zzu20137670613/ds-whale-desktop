@@ -133,6 +133,15 @@ const MASCOT_PATCH = `/* shell-patched: 说话钩子（holdMs = 打完字后停�
         }
       });
     };
+    /* shell-patched: DSH 干活也算「有人在」——抑制上游的 3 分钟 afk。
+       上游的 onUserActivity 只挂 pointerdown / keydown（见 vendor 的 start()），
+       于是 DSH 连着跑几分钟、turn 一停，lastInteraction 早就过期，
+       她立刻进 afk（"ZZZ……梦里也在帮主人数 bug🐑"）—— 那副样子就是用户看到的"睡觉"。
+       壳层在 DSH 工作态期间周期性转发这里，把"机器在干活"折算成"人在活动"。
+       转发的是上游自己的 onUserActivity（只更新 lastInteractionAt + schedule），不重写规则。 */
+    root.__dshWhaleMoeUserActivity = function () {
+      try { onUserActivity(); } catch (e) { /* ignore */ }
+    };
     ${MASCOT_PATCH_ANCHOR}`;
 let mascotCache = null;
 

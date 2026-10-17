@@ -424,8 +424,10 @@
     // 所以把确切数字放到主行，档位词退到副行。
     const tier = core && core.formatBalance ? core.formatBalance(amount, state.currency, false) : state.tier;
     const since = hb && hb.lastOkAt ? clockOf(hb.lastOkAt) : '';
-    const sub = [tier || '', since ? `更新 ${since}` : ''].filter(Boolean).join(' · ');
-    return { main: `💰 ${state.currency || 'CNY'} ${amount.toFixed(2)}`, sub, tone: 'ok' };
+    // 副行文案（用户 2026-10-17 定稿）：档位在前、更新时间在后 —— "充裕 · 14:28 更新"
+    const sub = [tier || '', since ? `${since} 更新` : ''].filter(Boolean).join(' · ');
+    // 主行不再挂币种代码（原来是 "CNY 41.11"，用户要求改成"余额 41.11"）
+    return { main: `💰 余额 ${amount.toFixed(2)}`, sub, tone: 'ok' };
   }
 
   /*

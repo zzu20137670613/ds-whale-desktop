@@ -1013,6 +1013,37 @@
     });
   }
 
+  // ---------- DSH 每轮战果 → 上游养成层 ----------
+  /*
+   * 「看到的消息条数 / 代码块数」这两项，上游靠**扫页面 DOM** 计数
+   * （`[data-slot="conversation.chat.node"]` 与 `pre`·终端节点）。
+   * 桌面版不在 DSH 页面里，那两路信号恒为 0 —— 每日任务「看 5 条会话消息」、
+   * 成就「会话百条 / 消息五百条 / 代码初体验 / 代码狂人」于是永远不动
+   * （实测踩到：DSH 跑一上午，抽到那条任务一直停在 0/5）。
+   * 主进程读会话文件时本来就在数，每轮结束推一次；这里转手交给上游自己的
+   * 记账函数（server.js 注入的钩子），养成规则一个字都没重写。
+   */
+  const dshProgressTotals = { messages: 0, codeBlocks: 0 };
+  if (typeof api.onDshProgress === 'function') {
+    api.onDshProgress((payload) => {
+      if (!payload) return;
+      const messages = Number(payload.messages) || 0;
+      const codeBlocks = Number(payload.codeBlocks) || 0;
+      try {
+        if (messages > 0 && typeof window.__dshWhaleMoeCountMessages === 'function') {
+          window.__dshWhaleMoeCountMessages(messages);
+          dshProgressTotals.messages += messages;
+        }
+        if (codeBlocks > 0 && typeof window.__dshWhaleMoeCountCode === 'function') {
+          window.__dshWhaleMoeCountCode(codeBlocks);
+          dshProgressTotals.codeBlocks += codeBlocks;
+        }
+      } catch (error) {
+        api.log('error', 'dsh progress → quests failed: ' + error.message);
+      }
+    });
+  }
+
   // ---------- 上报桌宠矩形（供自检端点/自动化测试用）----------
   function reportRect() {
     const frame = document.querySelector('[data-dsh-whale-frame]');
@@ -1064,6 +1095,17 @@
             dshWorking: window.__dshWhaleAnimDebug.dshWorking,
           }
         : null,
+      /*
+       * 「DSH 每轮战果 → 养成层」这条链的可用性与累计量：
+       * 钩子注入没有（上游锚点变了）、以及到底喂进去多少，外部一眼可辨 ——
+       * 否则只能靠肉眼看任务栏，而任务栏要凑够 5 条才动，很难判断是"没喂"还是"还没到"。
+       */
+      questFeed: {
+        countMessagesHook: typeof window.__dshWhaleMoeCountMessages === 'function',
+        countCodeHook: typeof window.__dshWhaleMoeCountCode === 'function',
+        fedMessages: dshProgressTotals.messages,
+        fedCodeBlocks: dshProgressTotals.codeBlocks,
+      },
     });
   }
 

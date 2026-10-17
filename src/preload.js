@@ -59,4 +59,17 @@ contextBridge.exposeInMainWorld('whaleShell', {
     ipcRenderer.on('shell:dsh-state', handler);
     return () => ipcRenderer.removeListener('shell:dsh-state', handler);
   },
+  /**
+   * 每一轮 DSH 工作**结束时**推一次「这一轮看到了多少」：
+   * { messages: number, codeBlocks: number }（只推实时 turn，历史回放不推）
+   *
+   * 为什么要它：上游的「看 5 条会话消息」任务与「会话百条 / 代码初体验」等成就
+   * 靠数页面 DOM 节点，而桌面版不在 DSH 页面里 —— 那几项永远停在 0。
+   * 主进程读会话文件时本来就在数，页面转手喂给上游记账函数即可。
+   */
+  onDshProgress: (cb) => {
+    const handler = (_event, payload) => cb(payload);
+    ipcRenderer.on('shell:dsh-progress', handler);
+    return () => ipcRenderer.removeListener('shell:dsh-progress', handler);
+  },
 });

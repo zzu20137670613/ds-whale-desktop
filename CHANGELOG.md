@@ -2,6 +2,38 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.13.3] - 2026-10-17
+
+### 修复：桌面版「看 5 条会话消息」这类条目永远完不成
+
+上游判定这些靠**扫页面 DOM**（数 `[data-slot="conversation.chat.node"]` 得消息条数、
+数 `pre` / 终端节点得代码块数），而桌面版不在 DSH 页面里 —— 那两路信号**恒为 0**。
+于是抽到「看 5 条会话消息」的任务后，DSH 跑一上午它也不动（一直 0/5），
+成就「会话百条 / 消息五百条 / 代码初体验 / 代码狂人」同样永远不亮，
+连带的「一日全勤」（单日 3 个任务全领）也跟着卡死。
+
+- **会话消息**：主进程读会话文件时本来就在数（`src/dsh-state.js` 的
+  `turnUsage.messages`，每条带 usage 的记录 +1），只是此前**只用来算钱**。
+  现在每轮 turn 结束把它推给页面（`shell:dsh-progress`），页面转交给上游
+  自己的 `addUsageStat("messages", n)` + `applyQuestSignal("messages", n)`。
+- **代码 / 终端**：同理，按会话记录里的工具调用折算（`CODE_TOOLS`：
+  pwsh / bash / terminal / write / edit 等；纯读取的 read / grep / glob 不算），
+  推给 `addUsageStat("code", n)`。
+- **只记实时 turn**：启动时追平到的历史回放不记 —— 否则升级一次就把攒了几百条
+  消息的成就一次性解锁掉，那不是她真的看到过的。
+- 两个钩子（`__dshWhaleMoeCountMessages` / `__dshWhaleMoeCountCode`）由
+  `src/server.js` 的服务时补丁注入，**上游养成规则一个字都没重写**，
+  `vendor/` 依旧零改动。
+
+### 说明
+
+- **自测**：`npm run dsh:probe` 增加端到端断言（伪造一轮战果 → 读回上游账本，
+  实测 `messagesStat=5 / codeStat=3`）；会话读取器的计数另有单测
+  （write/pwsh 计入、read/grep 不计）。
+- 仍未修：成就「关键词大师」要读会话**文本**才能匹配关键词，本次不动。
+- 已核实「denseCode（代码密集时缩小）」在上游是个**赋值后没人用的局部变量**，
+  桌面版本来就没有这个行为，不需要也不应该"修"。
+
 ## [0.13.2] - 2026-10-16
 
 ### 修复：DSH 干活时她仍会躺平（上游那条 3 分钟 afk 才是真身）

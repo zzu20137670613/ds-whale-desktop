@@ -28,6 +28,19 @@ const path = require('node:path');
 const os = require('node:os');
 const zlib = require('node:zlib');
 
+/**
+ * 哪些工具算「看到了代码 / 终端」。
+ *
+ * 上游（whale-moe 的成就「代码初体验 / 代码狂人」）数的是页面里的
+ * `pre` / 终端 / log 节点；桌面版不在 DSH 页面里，那些节点不存在，
+ * 于是改按会话记录里的工具调用折算 —— 起 shell 的、落文件的，正是会画出
+ * 终端卡 / 代码卡的那几种。纯读取类（read / glob / grep / 搜索）不算。
+ */
+const CODE_TOOLS = new Set([
+  'pwsh', 'bash', 'terminal', 'shell', 'job_output',
+  'write', 'edit', 'str_replace', 'multi_edit', 'apply_patch',
+]);
+
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 /** 忙态下多久没有新记录就认定 DS H已停（崩溃/被杀的兜底）。 */
 const DEFAULT_IDLE_AFTER_MS = 180000;
@@ -132,7 +145,7 @@ class DshStateWatcher {
     this.model = null;
     this.scanAt = 0;
     /** 当前 turn 累计的 token 用量（用于花费播报）。 */
-    this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0 };
+    this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0, codeCalls: 0 };
     /**
      * 是否已完成首次"追平历史"。
      * 启动时会把整份历史读一遍，里面全是历史 turn/end —— 不加这道闸就会在开机瞬间
@@ -192,7 +205,7 @@ class DshStateWatcher {
          */
         this.primed = false;
         this.lastStatSize = 0;
-        this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0 };
+        this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0, codeCalls: 0 };
       }
       this.size = found.size;
       this.mtimeMs = found.mtimeMs;
@@ -292,7 +305,7 @@ class DshStateWatcher {
         case 'turn/start':
           this.inTurn = true;
           this.turn = data.turn ?? null;
-          this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0 };
+          this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0, codeCalls: 0 };
           break;
         case 'turn/end': {
           this.inTurn = false;
@@ -300,7 +313,7 @@ class DshStateWatcher {
           this.flashUntil = Date.now() + this.flashMs;
           const usage = this.turnUsage;
           const hadUsage = usage.messages > 0;
-          this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0 };
+          this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0, codeCalls: 0 };
           /*
            * 每个 turn 结束都回调，包括启动时追平到的历史 turn。
            *
@@ -313,6 +326,10 @@ class DshStateWatcher {
             this.onTurnEnd({
               turn: data.turn ?? this.turn ?? null,
               usage,
+              /* 这一轮「看到」的代码 / 终端次数（见 CODE_TOOLS）。
+                 主进程拿它喂上游养成层 —— 桌面版页面里没有 pre/终端节点，
+                 上游自己数不到，成就「代码初体验 / 代码狂人」会永远停在 0。 */
+              codeBlocks: usage.codeCalls,
               reason: data.reason ?? null,
               // 用记录自己的时间而不是 Date.now()：历史账要归到它发生的那一天
               at: typeof record.time === 'number' ? record.time : Date.now(),
@@ -324,9 +341,12 @@ class DshStateWatcher {
           }
           break;
         }
-        case 'tool/call':
+        case 'tool/call': {
           this.toolName = typeof data.name === 'string' ? data.name : null;
+          /* 「看到代码/终端」的次数（成就「代码初体验 / 代码狂人」的数据源）。 */
+          if (this.toolName && CODE_TOOLS.has(this.toolName)) this.turnUsage.codeCalls += 1;
           break;
+        }
         /*
          * 当前用的是哪个模型：`request/header` 里带着
          *   data.header.config = { provider, model, reasoningEffort, maxTokens }

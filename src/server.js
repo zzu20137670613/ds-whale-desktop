@@ -142,6 +142,26 @@ const MASCOT_PATCH = `/* shell-patched: 说话钩子（holdMs = 打完字后停�
     root.__dshWhaleMoeUserActivity = function () {
       try { onUserActivity(); } catch (e) { /* ignore */ }
     };
+    /* shell-patched: 把「这一轮看到了多少会话消息 / 代码块」记进养成层。
+       上游这两项靠数页面 DOM 计数（[data-slot="conversation.chat.node"] 与 pre·终端节点），
+       而桌面版不在 DSH 页面里，那两路信号**恒为 0** —— 于是每日任务「看 5 条会话消息」
+       和成就「会话百条 / 消息五百条 / 代码初体验 / 代码狂人」在桌面版永远完不成
+       （实测踩到：DSH 跑一上午，抽到那条任务一直停在 0/5）。
+       主进程读会话文件时本来就在数（见 src/dsh-state.js 的 turnUsage），
+       这里只把**上游自己的两个记账函数**转出来复用：addUsageStat 会顺带结算成就，
+       applyQuestSignal 负责推进每日任务 —— 不重写任何养成规则。 */
+    root.__dshWhaleMoeCountMessages = function (n) {
+      var amount = Math.max(0, Number(n) || 0);
+      if (!amount) return;
+      try { addUsageStat("messages", amount); } catch (e) { /* ignore */ }
+      try { applyQuestSignal("messages", amount); } catch (e) { /* ignore */ }
+    };
+    root.__dshWhaleMoeCountCode = function (n) {
+      var amount = Math.max(0, Number(n) || 0);
+      if (!amount) return;
+      try { addUsageStat("code", amount); } catch (e) { /* ignore */ }
+      try { applyQuestSignal("code", amount); } catch (e) { /* ignore */ }
+    };
     ${MASCOT_PATCH_ANCHOR}`;
 let mascotCache = null;
 

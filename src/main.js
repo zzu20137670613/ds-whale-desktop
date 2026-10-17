@@ -459,6 +459,23 @@ function handleTurnEnd(event) {
   }
 
   if (event.historical) return; // 历史账只入账
+  /*
+   * 把「这一轮看到了多少会话消息 / 代码块」交给页面，喂进上游养成层
+   * （每日任务「看 5 条会话消息」+ 成就「会话百条/五百条」「代码初体验/代码狂人」）。
+   *
+   * 为什么必须由主进程喂：上游靠扫页面 DOM（chat 节点 / pre·终端节点）计数，
+   * 桌面版不在 DSH 页面里，那两路信号恒为 0 —— 抽到那条任务就永远停在 0/5。
+   * 主进程读会话文件时本来就在数（turnUsage.messages / codeCalls），顺路送过去。
+   *
+   * 只送**实时 turn**：历史回放是启动时追平到的旧记录，记进去等于"升级一次就把
+   * 攒了几百条的成就一次解锁"，那不是她真的看到过的。
+   */
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('shell:dsh-progress', {
+      messages: Number(event.usage && event.usage.messages) || 0,
+      codeBlocks: Number(event.codeBlocks) || 0,
+    });
+  }
   if (config.costSay === false) return;
   if (!shouldAnnounce(cost, config.costThreshold)) {
     log('[cost] 低于阈值，不播报', cost.toFixed(6), 'reason=', event.reason ? event.reason.kind : 'n/a');
@@ -891,6 +908,35 @@ function runDshProbe() {
       const label = item.tool ? `${item.state}/${item.tool}` : item.state;
       log('[dsh-probe]', label, item.expect ? `(期望 ${item.expect})` : '', '->', JSON.stringify(snap));
     }
+    /*
+     * 「每轮战果 → 养成层」这条链的端到端断言。
+     *
+     * 探针为什么能测它：探针走独立端口 → 独立源 → 干净的 localStorage，
+     * 伪造一次 turn 结束的推送后可以直接读回养成层的账本，看它到底记没记上。
+     * 断言 usageStats（addUsageStat 无条件记账、结果确定）；quests 那三个槽
+     * 是每天随机抽的，不一定含「看 5 条会话消息」，所以只作参考一并打出来。
+     */
+    win.webContents.send('shell:dsh-progress', { messages: 5, codeBlocks: 3 });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const feed = await win.webContents.executeJavaScript(`(() => {
+      const read = (k) => { try { return JSON.parse(localStorage.getItem('whale-moe:' + k) || 'null'); } catch (e) { return null; } };
+      const u = read('usageStats') || {};
+      const q = read('quests');
+      return {
+        hooks: {
+          messages: typeof window.__dshWhaleMoeCountMessages === 'function',
+          code: typeof window.__dshWhaleMoeCountCode === 'function',
+        },
+        messagesStat: u.messages || 0,
+        codeStat: u.code || 0,
+        slots: q && Array.isArray(q.slots)
+          ? q.slots.map((s) => s.id + ':' + s.progress + (s.claimed ? '(已领)' : ''))
+          : null,
+      };
+    })()`);
+    const feedOk =
+      feed.hooks.messages && feed.hooks.code && feed.messagesStat >= 5 && feed.codeStat >= 3;
+    log('[dsh-probe] quest-feed', feedOk ? 'OK' : 'FAIL', JSON.stringify(feed));
     log('[dsh-probe] DONE');
     app.exit(0);
   }, 3500);

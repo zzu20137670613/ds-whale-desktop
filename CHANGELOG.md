@@ -2,6 +2,42 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.13.2] - 2026-10-16
+
+### 修复：DSH 干活时她仍会躺平（上游那条 3 分钟 afk 才是真身）
+
+上一版只修了**我们自己**那条 30 分钟入睡计时，漏了**上游自带**的一条：
+`vendor/whale/whale-moe-core.js` 的 `AFK_MS = 3 分钟`，它的判定源
+（`signals.lastInteraction`）只被上游 `onUserActivity()` 更新 —— 而那个函数只挂
+`pointerdown` / `keydown`（见 vendor 的 `start()`），**DSH 干活压根不算交互**。
+于是连着跑几分钟、turn 一停，`lastInteraction` 早已过期，她立刻被放倒睡
+（"ZZZ……梦里也在帮主人数 bug🐑"）。**那副样子才是"干活时她还在睡"的真身。**
+
+- 修法：`src/server.js` 的 MASCOT_PATCH 注入 `__dshWhaleMoeUserActivity`
+  （转发上游自己的 `onUserActivity`，`vendor/` 保持**零改动**）；
+  `src/pet/anim/anims.js` 在 DSH 工作态期间每 **1.5s** 转发一次，压住 3 分钟阈值
+  （1.5s ≪ 3min，turn 间隙也盖得住）。
+- 顺手把「忙 / 闲」判定改走 `whaleShell.onDshState`（preload 暴露的 IPC），
+  与上游渲染出的 `data-dsh-whale-busy` **取或** —— 上游 render 出错时会
+  `observer.disconnect()` 并移除根节点且**不报错**，只靠那个 DOM 标记会静默失效。
+
+### 优化：心跳周期 1 分钟 → 30 分钟
+
+签到 / 余额的补判时间窗放宽到半小时（仍按**绝对日期**比较，不漏天）。
+
+### 其它
+
+- 冒烟脚本 `scripts/anim-smoke.cjs` 卡死 + 退出码修复：`server.close()` 前先
+  `closeAllConnections()` 断开 keep-alive 连接（否则 Node 连接池不放、`close`
+  回调永不触发），退出改 `process.exitCode`（避免与未收尾 I/O 竞态触发 libuv 断言崩溃）。
+- 探针（`/__shell/state` 与 `npm run dsh:probe`）新增闲时动作层快照
+  （`lastTouch` / `sleepInMs` / `busy` / `dshWorking` / `feeds`）——"她到底睡着了没"
+  从此可断言，不必靠肉眼看立绘。
+
+### 说明
+
+- 纯代码修复，无素材改动。绿色版解压即用，覆盖旧目录即可。
+
 ## [0.13.1] - 2026-10-16
 
 ### 修复：长驻进程跨天不再失效（心跳层）

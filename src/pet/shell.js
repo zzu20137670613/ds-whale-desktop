@@ -996,12 +996,70 @@
     }
   }
 
+  // ---------- success 信号的托底保持（2026-10-18 修）----------
+  /*
+   * 上游对 success 的判定是「节点可见才认」，而且它在状态机里的优先级是
+   *   error > tool > thinking > success
+   * 更要命的是 tool/thinking 信号**消失之后还有 4000ms 的 goneHold**
+   * （vendor 的 collectSignals：goneHold = view === "workbench" ? 8000 : 4000；
+   *   桌宠页面没有 DSH 工作台 DOM，detectView() 恒为 "home" → 4000ms）。
+   *
+   * 主进程读会话文件时，turn/end 的 success 只闪一次（下一个 400ms 轮询就回 idle），
+   * 页面里原来的 success 节点也就活 ~400ms —— **撑不过那 4 秒**，
+   * 于是上游永远进不了 success 状态：
+   *   · 每日任务「完成一次工作交付」（metric=success）永远不勾
+   *   · 成就「首次交付 / 交付达人」永远停在 0
+   *   · 「完成」姿势与台词也从来没出现过
+   *
+   * 修法：节点留 5 秒，期间每 800ms 重插一次 —— 重插是 childList 变化，
+   * 必定触发上游 120ms debounce 的 reconcile，保证 goneHold 过期后
+   * 一定有一次重算能读到它。vendor 一个字没改。
+   */
+  const SUCCESS_HOLD_MS = 5000;
+  const SUCCESS_PULSE_MS = 800;
+  let successHoldTimer = null;
+  let successPulseTimer = null;
+
+  function stopSuccessHold() {
+    if (successHoldTimer) {
+      clearTimeout(successHoldTimer);
+      successHoldTimer = null;
+    }
+    if (successPulseTimer) {
+      clearInterval(successPulseTimer);
+      successPulseTimer = null;
+    }
+    setSignal('success', false);
+  }
+
+  function holdSuccessSignal() {
+    if (successHoldTimer) {
+      clearTimeout(successHoldTimer);
+      successHoldTimer = null;
+    }
+    if (successPulseTimer) {
+      clearInterval(successPulseTimer);
+      successPulseTimer = null;
+    }
+    setSignal('success', true);
+    successPulseTimer = setInterval(() => {
+      if (!signalNodes.get('success')) return;
+      setSignal('success', false);
+      setSignal('success', true);
+    }, SUCCESS_PULSE_MS);
+    successHoldTimer = setTimeout(() => {
+      stopSuccessHold();
+    }, SUCCESS_HOLD_MS);
+  }
+
   function applyDshState(payload) {
     const state = payload && typeof payload.state === 'string' ? payload.state : 'idle';
     const tool = payload ? payload.tool : null;
     setSignal('thinking', state === 'thinking');
     setSignal('tool', state === 'tool', tool ? (TOOL_HINTS[tool] || String(tool)) : null);
-    setSignal('success', state === 'success');
+    // success 不能跟着下一次轮询（~400ms）就撤，否则撑不过上游 4s 的 goneHold
+    if (state === 'success') holdSuccessSignal();
+    else if (!successHoldTimer) setSignal('success', false);
     setSignal('error', state === 'failure');
   }
 

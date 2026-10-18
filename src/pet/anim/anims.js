@@ -53,6 +53,14 @@
     '插茱萸赏菊', '放河灯', '萌化小幽灵', '装点圣诞树', '放孔明灯', '吃汤圆', '吃饺子',
   ];
 
+  /**
+   * 单个动作的额外权重（没写 = 1）。
+   * 2026-10-17 用户要求：自动播放时「舞狮头」的出现频率高一些。
+   * 这里给 5 倍 —— 全池 76 项、总权重 80，舞狮头占 6.25%，约每 16 段轮到一次
+   * （13~25 秒一段 ≈ 5 分钟一次）。想更频繁直接调大这个数，不用动池子。
+   */
+  const ACTION_WEIGHT = { '舞狮头': 5 };
+
   let video = null; // <video> 覆盖层
   let timer = null; // 定时切下一段
   let afkTimer = null; // 后台 AFK 计时
@@ -84,8 +92,16 @@
     ourFirstMs: OUR_FIRST_MS,
   };
 
+  /** 加权抽取：默认每条 1 份，ACTION_WEIGHT 里写了的按倍数算（舞狮头 5 倍） */
   function pickAction() {
-    return ACTION_POOL[Math.floor(Math.random() * ACTION_POOL.length)];
+    let total = 0;
+    for (const name of ACTION_POOL) total += ACTION_WEIGHT[name] || 1;
+    let roll = Math.random() * total;
+    for (const name of ACTION_POOL) {
+      roll -= ACTION_WEIGHT[name] || 1;
+      if (roll < 0) return name;
+    }
+    return ACTION_POOL[ACTION_POOL.length - 1]; // 浮点误差兜底
   }
 
   function isVisible() {
@@ -360,7 +376,7 @@
     小动作: ['悠闲哼歌', '超大伸懒腰', '原地敲击桌面互动', '原地重力下蹲压缩', '哈欠连天', '原地小憩沉眠', '女仆屈膝礼仪', '被吓一跳', '小幅度原地360度旋转展示', '偷吃零食被抓住', '用鲸鱼尾巴拍打地面', '打瞌睡被惊醒', '照镜子', '整体换装试色', '轻快记录', '写代码', '摇扇纳凉', '晨间刷牙'],
     玩耍: ['原地专心玩魔方', '原地蹲下玩玩具汽车', '鲸鱼吐泡泡特效', '原地跳跃抓碎头顶物品', '玩游戏气急败坏', '玩水枪', '小提琴演奏', '蓝鲸现世', '优雅女仆舞', '轻快摇摆舞', '可爱宅舞', '吹气球', '动物环绕', '放风筝', '拆礼物', '变鸽子', '扑克魔术', '抽陀螺', '吹笛子', '蝴蝶蜜蜂环绕头顶开花', '撸猫', '凭空生花', '骑木马', '三球抛接', '踢毽子', '下五子棋', '荡秋千'],
     吃什么: ['吃白饭', '大口吃零食', '吃Token', '吃早餐', '吃午餐', '吃晚餐', '吃冰淇淋融化', '吃大闸蟹', '吃糖葫芦', '吃长寿面', '吃西瓜', '涮火锅'],
-    时节: ['被落叶淹没', '中秋赏月吃月饼', '堆雪人', '放烟花', '吃粽子', '吃年糕', '吃青团', '吃腊八粥', '吃重阳糕', '收红包', '写福字', '穿针乞巧', '舞狮头', '讨糖南瓜灯', '插茱萸赏菊', '放河灯', '萌化小幽灵', '装点圣诞树', '放孔明灯', '吃汤圆', '吃饺子'],
+    时节: ['被落叶淹没', '中秋赏月吃月饼', '堆雪人', '放烟花', '吃粽子', '吃年糕', '吃青团', '吃腊八粥', '吃重阳糕', '收红包', '写福字', '穿针乞巧', '讨糖南瓜灯', '插茱萸赏菊', '放河灯', '萌化小幽灵', '装点圣诞树', '放孔明灯', '吃汤圆', '吃饺子'],
   };
 
   function playMenuAction(name) {
@@ -385,8 +401,34 @@
     timer = root.setTimeout(playNext, 13000 + Math.random() * 12000);
   }
 
+  /** 顶层快捷项：「舞狮头」已从「时节」分类抽出，单独放在菜单最上面 */
+  const LION_DANCE = '舞狮头';
+
+  /**
+   * 往上游菜单插一条「舞狮头」，位置固定在**第一项**（即上游「投喂小点心」之上）。
+   * 幂等：同一次菜单只插一次；分类树里不插（树里是动作列表，不该混进顶层项），
+   * 点「◀ 返回」重建菜单时会重新补上。
+   */
+  function injectLionDanceItem(menu) {
+    if (menu.querySelector('[data-shell-lion-dance]')) return;
+    const btn = doc.createElement('button');
+    btn.type = 'button';
+    btn.textContent = `🦁 ${LION_DANCE}`;
+    btn.setAttribute('data-shell-lion-dance', 'true');
+    btn.addEventListener('click', (event) => {
+      // 与「动作」菜单里点动作同一条路：停掉菜单的事件冒泡，关菜单，直接播这段 webm
+      event.stopPropagation();
+      menu.remove();
+      playMenuAction(LION_DANCE);
+    });
+    const first = menu.querySelector('button');
+    if (first) menu.insertBefore(btn, first);
+    else menu.appendChild(btn);
+  }
+
   /** 在菜单里插入「动作」按钮；点开后把菜单内容换成分类树（面包屑可返回） */
   function injectActionMenu(menu) {
+    injectLionDanceItem(menu);
     if (menu.querySelector('[data-shell-action-menu]')) return;
     const actionBtn = doc.createElement('button');
     actionBtn.type = 'button';

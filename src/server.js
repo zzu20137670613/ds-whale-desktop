@@ -162,6 +162,272 @@ const MASCOT_PATCH = `/* shell-patched: 说话钩子（holdMs = 打完字后停�
       try { addUsageStat("code", amount); } catch (e) { /* ignore */ }
       try { applyQuestSignal("code", amount); } catch (e) { /* ignore */ }
     };
+    /* shell-patched: 触发词彩蛋（2026-10-19）——
+       ① 两个小游戏结算时按 galgame 同一套规则给触发词：戳泡泡 > 999 给番外词，
+          接点心 > 666 给隐藏词。「过线」= 严格大于；每过线一次按顺序给下一条，
+          三条走完从头循环。通关次数存 localStorage「whale-moe:tipUnlocks」，
+          与上游自己的游戏统计同源（都在页面 storage 里）。
+          只说不弹窗：结算后气泡一句话 —— 用户明确要求桌宠这边「只用气泡说一句」。
+       ② 尾巴三下彩蛋：上游只在非忙态给 tailReact（单击甩尾），**从不计数**；
+          这里照抄「摸头三下」的判定（2 秒内 3 下、2.6 秒冷却），第三下说专属台词，
+          并跳过原 tailReact —— 否则两句会挤在同一个单槽气泡里互相覆盖。
+          zones 偏好关闭时不做判定（与上游「分区反应」开关保持一致）。
+       ③ 想改词表/分数线，只动下面两张表；别去改 vendor。 */
+    var __shellTipWords = {
+      extra: ["今天营业吗", "岁月静好", "一夜鱼龙舞"],
+      hidden: [
+        "Claude的图书馆借阅证",
+        "gpt小龙娘的天空之城龙王宝座",
+        "最后一段隐藏剧情要自己探索哦，提示：与深海有关"
+      ]
+    };
+    var __shellTipTarget = { extra: 999, hidden: 666 };
+    function __shellTipLoad() {
+      try {
+        var raw = root.localStorage.getItem("whale-moe:tipUnlocks");
+        var data = raw ? JSON.parse(raw) : null;
+        return {
+          extra: Math.max(0, Math.floor(Number(data && data.extra) || 0)),
+          hidden: Math.max(0, Math.floor(Number(data && data.hidden) || 0))
+        };
+      } catch (e) {
+        return { extra: 0, hidden: 0 };
+      }
+    }
+    function __shellTipSave(counts) {
+      try { root.localStorage.setItem("whale-moe:tipUnlocks", JSON.stringify(counts)); } catch (e) { /* ignore */ }
+    }
+    function __shellTipResult(kind, score) {
+      var words = __shellTipWords[kind];
+      if (!words) return __shellTipLoad();
+      var target = __shellTipTarget[kind];
+      var n = Math.max(0, Math.floor(Number(score) || 0));
+      var counts = __shellTipLoad();
+      if (n > target) {
+        counts[kind] += 1;
+        __shellTipSave(counts);
+        var word = words[(counts[kind] - 1) % words.length];
+        __shellSayImportant(
+          (kind === "extra" ? "戳泡泡 " : "接点心 ") + n + " 分，过线啦！" +
+          (kind === "extra" ? "番外" : "隐藏") + "触发词送你：「" + word + "」"
+        );
+      } else {
+        /* 没过线也给一句具体差距：999 不是随手能到的数，没反馈会以为坏了 */
+        __shellSayImportant("还差 " + (target + 1 - n) + " 分就到 " + target + " 了，再来一局嘛～");
+      }
+      return counts;
+    }
+    var __shellEndGame = endGame;
+    endGame = function (result) {
+      var score = result ? result.score : 0;
+      __shellEndGame(result);
+      try { __shellTipResult("extra", score); } catch (e) { /* ignore */ }
+    };
+    var __shellEndCatchGame = endCatchGame;
+    endCatchGame = function (result) {
+      var score = result ? result.score : 0;
+      __shellEndCatchGame(result);
+      try { __shellTipResult("hidden", score); } catch (e) { /* ignore */ }
+    };
+    var __shellTailHistory = [];
+    var __shellTailLastTripleAt = 0;
+    /* 0.8 秒冷却：只用来吞掉「同一串连点里的第 4~6 下」，避免一次猛点触发两遍。
+       上游摸头用的是 2.6 秒，但那是庆祝动作的节奏；尾巴彩蛋用户要求“三下就再来一次”，
+       2.6 秒会让人觉得「第一次之后就不灵了」。 */
+    var __shellTailCooldownMs = 800;
+    /* shell-patched: 尾尖命中区收窄 —— 上游 HIT_ZONES.full 把「底边整条」
+       （x 0~1、y 0.78~1）都算成尾巴，实际盖住裙子下摆到脚底（用户反馈"像裙底"）。
+       收窄成「横 2 × 竖 3」网格的最右下一格（x>=0.5, y>=0.66）：尾鳍正好在这一格；
+       同一条底边里偏左的点击退回普通摸头（与上游未命中的兜底一致）。 */
+    var __shellResolveHitZone = resolveHitZone;
+    resolveHitZone = function (clientX, clientY, rootNode) {
+      var zone = __shellResolveHitZone(clientX, clientY, rootNode);
+      if (zone !== "tail") return zone;
+      var rect = rootNode.getBoundingClientRect();
+      if (rect.width <= 1 || rect.height <= 1) return zone;
+      var nx = (clientX - rect.left) / rect.width;
+      var ny = (clientY - rect.top) / rect.height;
+      var narrowed = (nx >= 0.5 && ny >= 0.66) ? "tail" : "head";
+      try { rootNode.setAttribute("data-dsh-whale-zone", narrowed); } catch (e) { /* ignore */ }
+      return narrowed;
+    };
+    var __shellPatMascot = patMascot;
+    patMascot = function (zone) {
+      var busyNow = BUSY_STATES[memory.state.state] === 1;
+      if (zone === "tail" && readPref("zones")) {
+        var now = Date.now();
+        if (now >= celebrateUntil) {
+          if (now - __shellTailLastTripleAt >= __shellTailCooldownMs) {
+            __shellTailHistory = __shellTailHistory.filter(function (t) { return now - t < 2000; });
+            __shellTailHistory.push(now);
+            if (__shellTailHistory.length >= 3) {
+              __shellTailHistory = [];
+              __shellTailLastTripleAt = now;
+              applyGrowth({ type: "tail" }, now, 0);
+              showMood("react-tail", 2600, true);
+              emojiBurst(["🌀", "💨"]);
+              __shellSayImportant("哎呀，讨厌啦！我投降我老实交代：[深海回响]里羞羞剧情的触发词是[一夜鱼龙舞]");
+              reconcile();
+              return;
+            }
+          } else {
+            /* 冷却期内的点击不计数：否则上一轮的尾巴点击会残留下来，
+               和下一轮拼成“假三连”，表现为时灵时不灵。 */
+            __shellTailHistory = [];
+          }
+        }
+        /* 忙态下上游不会走 tailReact 的早退，而是把尾巴点击当普通摸摸计入 patHistory；
+           这些记录会攒成“摸头三连”，一触发就进 2.2 秒庆祝期，把尾巴三连挡掉。
+           这里把本次新加的那一条摘掉，只影响计数，不影响她显示的忙态反应。 */
+        var prevLast = patHistory[patHistory.length - 1];
+        var out = __shellPatMascot(zone);
+        if (busyNow && patHistory.length && patHistory[patHistory.length - 1] !== prevLast) {
+          patHistory.pop();
+        }
+        return out;
+      }
+      return __shellPatMascot(zone);
+    };
+    /* 自检钩子：只读进度 / 模拟一局结算（probe 用，正常流程不会调） */
+    root.__dshWhaleMoeTipState = function () { return __shellTipLoad(); };
+    root.__dshWhaleMoeTipSimulate = function (kind, score) { return __shellTipResult(kind, score); };
+    /* shell-patched: 气泡里的齿轮 ⚙ 去掉（2026-10-19）——
+       上游把「偏好面板」入口做成了气泡内的一个 button（gear.textContent="⚙"），
+       所以每句台词末尾都跟着一个齿轮。但壳层早已把偏好面板整个 display:none
+       （见 src/pet/shell.css 的 [data-dsh-whale-prefs]），点它什么都不会发生，
+       纯装饰。这里在 ensureRoot 返回时把它从 DOM 里摘掉（不是 display:none），
+       避免占位；vendor 不改。 */
+    var __shellEnsureRoot = ensureRoot;
+    ensureRoot = function () {
+      var node = __shellEnsureRoot();
+      try {
+        var gear = node.querySelector("[data-dsh-whale-gear]");
+        if (gear) gear.remove();
+      } catch (e) { /* ignore */ }
+      return node;
+    };
+    /* shell-patched: 气泡横向夹取 —— 气泡是「相对她的中心居中」，她默认蹲在右下角，
+       长台词（尤其是尾巴彩蛋那句 40 字）会越过窗口右边缘被切掉。
+       这里在文本变化时量一次宽度，溢出就往回收；用 ResizeObserver 跟住逐字打字时的变宽。
+       只动 margin-left（不碰 transform），居中规则与箭头位置都保持原样。 */
+    var __shellClampBubble = function () {
+      var rootNode = doc.querySelector("[data-dsh-whale-root]");
+      var bubble = rootNode && rootNode.querySelector("[data-dsh-whale-bubble]");
+      if (!bubble || bubble.hidden) return;
+      bubble.style.marginLeft = "";
+      var vw = root.innerWidth || 0;
+      if (!vw) return;
+      var rect = bubble.getBoundingClientRect();
+      var shift = 0;
+      if (rect.right > vw - 8) shift = (vw - 8) - rect.right;
+      if (rect.left + shift < 8) shift = 8 - rect.left;
+      if (shift) bubble.style.marginLeft = Math.round(shift) + "px";
+    };
+    var __shellBubbleObserved = null;
+    var __shellEnsureBubbleObserver = function () {
+      var rootNode = doc.querySelector("[data-dsh-whale-root]");
+      var bubble = rootNode && rootNode.querySelector("[data-dsh-whale-bubble]");
+      if (!bubble || bubble === __shellBubbleObserved) return;
+      __shellBubbleObserved = bubble;
+      try {
+        new ResizeObserver(function () { __shellClampBubble(); }).observe(bubble);
+      } catch (e) { /* ignore */ }
+    };
+    var __shellShowLine = showLine;
+    showLine = function (line) {
+      __shellShowLine(line);
+      try { __shellEnsureBubbleObserver(); __shellClampBubble(); } catch (e) { /* ignore */ }
+    };
+    var __shellShowLineNow = showLineNow;
+    showLineNow = function (line) {
+      __shellShowLineNow(line);
+      try { __shellEnsureBubbleObserver(); __shellClampBubble(); } catch (e) { /* ignore */ }
+    };
+    /* 重要台词（触发词奖励、尾巴彩蛋）走「立即显示」：
+       普通 showLine 是单槽队列，DSH 成就/余额播报一来就会把排队中的奖励句顶掉；
+       这类话用户是特意点出来的，被别的播报吞掉会很像 bug。 */
+    function __shellSayImportant(line) {
+      if (!line) return;
+      try { emitInteractionLine(localizeLine(line)); } catch (e) { /* ignore */ }
+      showLineNow(line);
+    }
+    /* shell-patched: 「深海回响」安利词池（2026-10-19）——
+       待机闲聊有 1/4 概率轮到这一池；六句轮着说、12 条内不重复。
+       问候（3 小时一次）和天气变化优先，不抢它们的场。
+       同时按用户要求把待机闲聊间隔从 5~8 分钟改成 2~5 分钟。
+       注意：vendor 的 DIALOGUE 是深冻结的，改不了，所以这里另起一个池子。 */
+    IDLE_CHAT_MIN = 2 * 60000;
+    IDLE_CHAT_MAX = 5 * 60000;
+    if (idleChat.nextAt - Date.now() > IDLE_CHAT_MAX) {
+      idleChat.nextAt = Date.now() + IDLE_CHAT_MIN + Math.floor(Math.random() * (IDLE_CHAT_MAX - IDLE_CHAT_MIN));
+    }
+    var __shellAdLines = [
+      "「深海回响」里的鲸鱼娘就是我哦——去玩玩看嘛🐋",
+      "「深海回响」是开源的哦，GitHub 上直接能下载，不用问我🔗",
+      "懒得折腾的话，「深海回响」的 release 里有成品安装包，装完就能玩📦",
+      "「深海回响」电脑和手机都能玩哦——两端都有安装包，挑顺手的那个💻📱",
+      "「深海回响」里也有我……多的不说了，你自己去看😳",
+      "玩「深海回响」的时候要是想起我了，记得回来说一声～"
+    ];
+    var __shellAdCursor = Math.floor(Math.random() * __shellAdLines.length);
+    function __shellPickAdLine() {
+      for (var i = 0; i < __shellAdLines.length; i += 1) {
+        var idx = (__shellAdCursor + i) % __shellAdLines.length;
+        var candidate = __shellAdLines[idx];
+        if (recentLines.indexOf(candidate) === -1) {
+          __shellAdCursor = (idx + 1) % __shellAdLines.length;
+          return candidate;
+        }
+      }
+      var fallback = __shellAdLines[__shellAdCursor % __shellAdLines.length];
+      __shellAdCursor = (__shellAdCursor + 1) % __shellAdLines.length;
+      return fallback;
+    }
+    var __shellIdleChatTick = idleChatTick;
+    idleChatTick = function (now) {
+      var greetingDue = (now - idleChat.lastGreetAt >= GREET_GAP_MS) &&
+        core.greetBucket(new Date(now).getHours()) !== "night";
+      if (
+        now >= idleChat.nextAt &&
+        detectView() !== "settings" &&
+        memory.state.state === "idle" &&
+        readPref("chat") && readPref("pet") &&
+        bubbleFree() &&
+        !greetingDue &&
+        !weatherChangedSinceTold() &&
+        Math.random() < 0.25
+      ) {
+        idleChat.nextAt = now + IDLE_CHAT_MIN + Math.floor(Math.random() * (IDLE_CHAT_MAX - IDLE_CHAT_MIN));
+        var adLine = __shellPickAdLine();
+        if (adLine) {
+          showChatLine(adLine);
+          return;
+        }
+      }
+      return __shellIdleChatTick(now);
+    };
+    /* 自检钩子：词池 / 间隔 / 立即说下一条 */
+    root.__dshWhaleMoeAdLines = function () { return __shellAdLines.slice(); };
+    root.__dshWhaleMoeAdSayNext = function () {
+      var line = __shellPickAdLine();
+      if (line) showChatLine(line);
+      return line;
+    };
+    root.__dshWhaleMoeIdleWindow = function () { return [IDLE_CHAT_MIN, IDLE_CHAT_MAX]; };
+    root.__dshWhaleMoeTailState = function () {
+      return {
+        history: __shellTailHistory.slice(),
+        lastTripleAt: __shellTailLastTripleAt,
+        celebrateUntil: celebrateUntil,
+        zones: readPref("zones"),
+        now: Date.now()
+      };
+    };
+    root.__dshWhaleMoeTailReset = function () {
+      __shellTailHistory = [];
+      __shellTailLastTripleAt = 0;
+      return true;
+    };
     ${MASCOT_PATCH_ANCHOR}`;
 let mascotCache = null;
 

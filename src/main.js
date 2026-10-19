@@ -95,6 +95,7 @@ const DSH_PROBE = argValue('dsh-probe') !== undefined;
 const SETTINGS_PROBE = argValue('settings-probe') !== undefined;
 const GROWTH_PROBE = argValue('growth-probe') !== undefined;
 const SAY_PROBE = argValue('say-probe') !== undefined;
+const TIP_PROBE = argValue('tip-probe') !== undefined;
 const OPEN_DSH_PROBE = argValue('open-dsh-probe') !== undefined;
 /** 自检用：强制跳过单实例锁，便于与常驻实例并存做封闭测试。 */
 const STANDALONE = argValue('standalone') !== undefined;
@@ -102,7 +103,7 @@ const STANDALONE = argValue('standalone') !== undefined;
 const PORT_OVERRIDE = Number(argValue('port')) > 0 ? Number(argValue('port')) : null;
 /** shot / menu-probe / standalone 都是自检模式，要允许与常驻实例并存。 */
 const PROBE_MODE =
-  SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE || GROWTH_PROBE || SAY_PROBE || OPEN_DSH_PROBE;
+  SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE || GROWTH_PROBE || SAY_PROBE || TIP_PROBE || OPEN_DSH_PROBE;
 /**
  * 「打开DSH」只演练、不真开浏览器。
  *
@@ -302,6 +303,7 @@ function createWindow() {
     if (SETTINGS_PROBE) runSettingsProbe();
     else if (GROWTH_PROBE) runGrowthProbe();
     else if (SAY_PROBE) runSayProbe();
+    else if (TIP_PROBE) runTipProbe();
     else if (OPEN_DSH_PROBE) runOpenDshProbe();
     else if (DSH_PROBE) runDshProbe();
     else if (MENU_PROBE) runMenuProbe();
@@ -1542,6 +1544,295 @@ function runSayProbe() {
     const expected = 8;
     log(
       '[say-probe]',
+      results.length !== expected
+        ? `DONE 断言数不符：跑了 ${results.length} 项、预期 ${expected} 项，失败 ${failed} 项`
+        : failed === 0
+          ? `DONE 全部 ${expected} 项通过`
+          : `DONE ${failed}/${expected} 项未通过`
+    );
+    app.exit(failed === 0 && results.length === expected ? 0 : 1);
+  }, 3500);
+}
+
+// ---------------------------------------------------------------- 触发词彩蛋探针
+/**
+ * 验证桌宠侧两处彩蛋：
+ *   ① 两个小游戏结算 → 过线按顺序给触发词（戳泡泡 >999 番外 / 接点心 >666 隐藏）；
+ *   ② 尾巴三连点 → 说「一夜鱼龙舞」那句。
+ *
+ * 不去真打 30 秒游戏（999 分要近乎满连击，探针里无法稳定复现），
+ * 而是调注入钩子 `__dshWhaleMoeTipSimulate` 走**同一段结算逻辑**；
+ * 尾巴则真的在 frame 的尾巴命中区派发三次 click，走完整命中判定。
+ *
+ * 自检会临时改 localStorage（模式 / 分区反应 / 进度），结束时原样还原。
+ */
+function runTipProbe() {
+  const target = typeof argValue('tip-probe') === 'string'
+    ? argValue('tip-probe')
+    : path.join(ROOT, 'tmp', 'tip-probe.png');
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  setTimeout(async () => {
+    const results = [];
+    const check = (name, ok, detail) => {
+      results.push({ name, ok });
+      log('[tip-probe]', ok ? 'PASS' : 'FAIL', name, detail ? '-> ' + detail : '');
+    };
+    const exec = (code) => win.webContents.executeJavaScript(code);
+    const readBubble = () =>
+      exec(`(() => {
+        const bubble = document.querySelector('[data-dsh-whale-bubble]');
+        const text = document.querySelector('[data-dsh-whale-bubble-text]');
+        if (!bubble || !text) return null;
+        return { hidden: Boolean(bubble.hidden), text: text.textContent || '' };
+      })()`);
+    const waitText = async (needle, timeoutMs) => {
+      const deadline = Date.now() + (timeoutMs || 9000);
+      let last = null;
+      while (Date.now() < deadline) {
+        last = await readBubble();
+        if (last && !last.hidden && last.text.includes(needle)) return last;
+        await sleep(150);
+      }
+      return last;
+    };
+    /** 等逐字打字全部结束（textContent 完全相等，caret 也已被移除） */
+    const waitExact = async (expected, timeoutMs) => {
+      const deadline = Date.now() + (timeoutMs || 12000);
+      let last = null;
+      while (Date.now() < deadline) {
+        last = await readBubble();
+        if (last && !last.hidden && last.text === expected) return last;
+        await sleep(120);
+      }
+      return last;
+    };
+    const tipState = () => exec('window.__dshWhaleMoeTipState ? window.__dshWhaleMoeTipState() : null');
+    const simulate = (kind, score) =>
+      exec(`window.__dshWhaleMoeTipSimulate ? window.__dshWhaleMoeTipSimulate(${JSON.stringify(kind)}, ${Number(score)}) : null`);
+
+    let backupTips = null;
+    let backupMode = null;
+    let backupZones = null;
+
+    try {
+      const hooks = await exec(`JSON.stringify({
+        tip: typeof window.__dshWhaleMoeTipSimulate,
+        state: typeof window.__dshWhaleMoeTipState
+      })`);
+      const parsed = JSON.parse(hooks);
+      check('页面暴露触发词自检钩子', parsed.tip === 'function' && parsed.state === 'function', hooks);
+
+      // 备份 → 清零，让断言从确定的 0 开始
+      backupTips = await exec(`(() => {
+        const raw = localStorage.getItem('whale-moe:tipUnlocks');
+        localStorage.setItem('whale-moe:tipUnlocks', JSON.stringify({ extra: 0, hidden: 0 }));
+        return raw;
+      })()`);
+      backupMode = await exec(`localStorage.getItem('whale-moe:mode')`);
+      backupZones = await exec(`localStorage.getItem('whale-moe:zones')`);
+      await exec(`(() => {
+        localStorage.setItem('whale-moe:mode', 'float');
+        localStorage.setItem('whale-moe:zones', '1');
+        window.dispatchEvent(new Event('whale-moe-prefs-change'));
+        return true;
+      })()`);
+      await sleep(900);
+
+      // ① 戳泡泡过线 → 第一条番外词
+      await simulate('extra', 1000);
+      let got = await waitText('今天营业吗');
+      let st = await tipState();
+      check(
+        '戳泡泡 >999：进度 +1 且给出第一条番外词',
+        Boolean(st) && st.extra === 1 && Boolean(got && got.text.includes('今天营业吗')),
+        JSON.stringify({ st, got })
+      );
+
+      // ② 气泡尾巴上不该再跟着上游那个 ⚙ 按钮
+      const gearProbe = await exec(`(() => {
+        const bubble = document.querySelector('[data-dsh-whale-bubble]');
+        return {
+          gear: document.querySelectorAll('[data-dsh-whale-gear]').length,
+          bubbleText: bubble ? (bubble.textContent || '') : null
+        };
+      })()`);
+      check(
+        '气泡里不再有齿轮按钮',
+        Boolean(gearProbe) && gearProbe.gear === 0 &&
+          Boolean(gearProbe.bubbleText) && !gearProbe.bubbleText.includes('⚙'),
+        JSON.stringify(gearProbe)
+      );
+
+      // ③ 没过线 → 进度不动，并报出具体差距
+      await simulate('extra', 800);
+      got = await waitText('还差 200 分');
+      st = await tipState();
+      check(
+        '未过线：进度不变并给出差距',
+        Boolean(st) && st.extra === 1 && Boolean(got && got.text.includes('还差 200 分')),
+        JSON.stringify({ st, got })
+      );
+
+      // ③ 再过关 → 按顺序给第二条（不是重复第一条）
+      await simulate('extra', 1500);
+      got = await waitText('岁月静好');
+      st = await tipState();
+      check(
+        '第二次过线：按顺序给第二条',
+        Boolean(st) && st.extra === 2 && Boolean(got && got.text.includes('岁月静好')),
+        JSON.stringify({ st, got })
+      );
+
+      // ④ 接点心过线 → 第一条隐藏词
+      await simulate('hidden', 700);
+      got = await waitText('Claude的图书馆借阅证');
+      st = await tipState();
+      check(
+        '接点心 >666：给出第一条隐藏词',
+        Boolean(st) && st.hidden === 1 && Boolean(got && got.text.includes('Claude的图书馆借阅证')),
+        JSON.stringify({ st, got })
+      );
+
+      // ⑤ 边界：等于 666 不算过线（严格大于）
+      await simulate('hidden', 666);
+      got = await waitText('还差 1 分');
+      st = await tipState();
+      check(
+        '等于 666 不算过线（严格大于）',
+        Boolean(st) && st.hidden === 1 && Boolean(got && got.text.includes('还差 1 分')),
+        JSON.stringify({ st, got })
+      );
+
+      // ⑥ 命中区负例：裙子下摆偏左（在底边、但不在右下格）不该算尾巴
+      const clickAt = (nx, ny, times) => exec(`(() => {
+        const frame = document.querySelector('[data-dsh-whale-frame]');
+        const rootNode = document.querySelector('[data-dsh-whale-root]');
+        if (!frame) return null;
+        const r = frame.getBoundingClientRect();
+        if (r.width <= 1) return { width: r.width };
+        const x = r.left + r.width * ${Number(nx)};
+        const y = r.top + r.height * ${Number(ny)};
+        const zones = [];
+        for (let i = 0; i < ${Number(times)}; i += 1) {
+          frame.dispatchEvent(new MouseEvent('click', {
+            bubbles: true, cancelable: true, clientX: x, clientY: y
+          }));
+          zones.push(rootNode ? rootNode.getAttribute('data-dsh-whale-zone') : null);
+        }
+        return { width: r.width, height: r.height, x: Math.round(x), y: Math.round(y), zones };
+      })()`);
+
+      const leftHit = await clickAt(0.25, 0.9, 3);
+      await sleep(1500);
+      const leftBubble = await readBubble();
+      check(
+        '裙子下摆偏左不算尾巴',
+        Boolean(leftBubble) && !leftBubble.text.includes('一夜鱼龙舞'),
+        JSON.stringify({ leftHit, leftBubble })
+      );
+
+      // ⑦ 尾尖正例：横 2 × 竖 3 网格的最右下一格
+      //    先等摸头三下的 2.2 秒庆祝期过去（负例那三下会触发普通摸头）
+      await sleep(2600);
+      const TAIL_LINE = '哎呀，讨厌啦！我投降我老实交代：[深海回响]里羞羞剧情的触发词是[一夜鱼龙舞]';
+      let tailHit = null;
+      for (let attempt = 0; attempt < 3 && !tailHit; attempt += 1) {
+        const clicked = await clickAt(0.72, 0.92, 3);
+        const bubble = await waitExact(TAIL_LINE, 5000);
+        if (bubble && bubble.text === TAIL_LINE) tailHit = { clicked, bubble };
+        else await sleep(1600); // 避开摸头三下的 2.2 秒庆祝期
+      }
+      check('尾尖三连点说出彩蛋台词', Boolean(tailHit), JSON.stringify(tailHit || {}));
+
+      // ⑧ 长台词不能被窗口右边缘切掉（她默认蹲在右下角）
+      const fit = await exec(`(() => {
+        const b = document.querySelector('[data-dsh-whale-bubble]');
+        if (!b) return null;
+        const r = b.getBoundingClientRect();
+        return { left: Math.round(r.left), right: Math.round(r.right), vw: window.innerWidth, ml: b.style.marginLeft };
+      })()`);
+      check(
+        '长台词气泡不越出窗口边界',
+        Boolean(fit) && fit.right <= fit.vw - 6 && fit.left >= 6,
+        JSON.stringify(fit)
+      );
+
+      // ⑨ 连续触发：重置计数后，隔 1 秒再做一轮三连点，必须还能触发
+      //    （上一版 2.6 秒冷却 + 冷却期残留计数，会让用户觉得“第一次之后就不灵”）
+      await exec('window.__dshWhaleMoeTailReset ? window.__dshWhaleMoeTailReset() : false');
+      const round1 = await clickAt(0.72, 0.92, 3);
+      const tail1 = await exec('window.__dshWhaleMoeTailState ? window.__dshWhaleMoeTailState() : null');
+      await sleep(1000);
+      const round2 = await clickAt(0.72, 0.92, 3);
+      const tail2 = await exec('window.__dshWhaleMoeTailState ? window.__dshWhaleMoeTailState() : null');
+      check(
+        '尾尖 1 秒后可再次触发',
+        Boolean(tail1) && Boolean(tail2) &&
+          tail1.lastTripleAt > 0 && tail2.lastTripleAt > tail1.lastTripleAt,
+        JSON.stringify({ round1, round2, tail1, tail2 })
+      );
+
+      // ⑩ 待机闲聊间隔：5~8 分钟 → 2~5 分钟
+      const idleWindow = await exec('window.__dshWhaleMoeIdleWindow ? window.__dshWhaleMoeIdleWindow() : null');
+      check(
+        '待机闲聊间隔改为 2~5 分钟',
+        Array.isArray(idleWindow) && idleWindow[0] === 120000 && idleWindow[1] === 300000,
+        JSON.stringify(idleWindow)
+      );
+
+      // ⑪ 安利词池：六句、每句都带游戏名
+      const adLines = await exec('window.__dshWhaleMoeAdLines ? window.__dshWhaleMoeAdLines() : null');
+      check(
+        '安利词池 6 句且都带「深海回响」',
+        Array.isArray(adLines) && adLines.length === 6 &&
+          adLines.every((l) => String(l).includes('深海回响')),
+        JSON.stringify(adLines)
+      );
+
+      // ⑫ 安利台词能正常说出来，且下一条会轮转
+      const ad1 = await exec('window.__dshWhaleMoeAdSayNext ? window.__dshWhaleMoeAdSayNext() : null');
+      const adBubble = ad1 ? await waitExact(String(ad1), 8000) : null;
+      const ad2 = await exec('window.__dshWhaleMoeAdSayNext ? window.__dshWhaleMoeAdSayNext() : null');
+      check(
+        '安利台词能说出且按顺序轮转',
+        Boolean(ad1) && Boolean(adBubble) && adBubble.text === ad1 && Boolean(ad2) && ad2 !== ad1,
+        JSON.stringify({ ad1, adBubble, ad2 })
+      );
+
+      const image = await captureImage(win.webContents);
+      if (image) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, image.toPNG());
+        log('[tip-probe] screenshot', target);
+      }
+    } catch (error) {
+      log('[tip-probe] failed', error.message);
+    }
+
+    // 还原自检改动过的 localStorage
+    try {
+      await exec(`(() => {
+        const tips = ${JSON.stringify(backupTips)};
+        if (tips === null) localStorage.removeItem('whale-moe:tipUnlocks');
+        else localStorage.setItem('whale-moe:tipUnlocks', tips);
+        const mode = ${JSON.stringify(backupMode)};
+        if (mode === null) localStorage.removeItem('whale-moe:mode');
+        else localStorage.setItem('whale-moe:mode', mode);
+        const zones = ${JSON.stringify(backupZones)};
+        if (zones === null) localStorage.removeItem('whale-moe:zones');
+        else localStorage.setItem('whale-moe:zones', zones);
+        window.dispatchEvent(new Event('whale-moe-prefs-change'));
+        return true;
+      })()`);
+    } catch (e) {
+      log('[tip-probe] restore failed', e.message);
+    }
+
+    const failed = results.filter((r) => !r.ok).length;
+    const expected = 14;
+    log(
+      '[tip-probe]',
       results.length !== expected
         ? `DONE 断言数不符：跑了 ${results.length} 项、预期 ${expected} 项，失败 ${failed} 项`
         : failed === 0

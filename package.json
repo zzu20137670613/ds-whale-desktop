@@ -1,7 +1,7 @@
 {
   "name": "dsh-whale-desktop",
   "productName": "鲸鲸桌宠",
-  "version": "0.13.4",
+  "version": "0.13.5",
   "description": "桌面级鲸鲸看板娘：把 dsh-whale-musume 的桌宠本体从 DSH 网页里解放出来，做成透明置顶、可点击穿透的 Windows 桌面挂件。",
   "main": "src/main.js",
   "author": "crossoverthere <1433065523@qq.com>",
@@ -16,6 +16,7 @@
     "settings:probe": "electron . --settings-probe",
     "growth:probe": "electron . --growth-probe",
     "say:probe": "electron . --say-probe",
+    "tip:probe": "electron . --tip-probe",
     "open-dsh:probe": "electron . --open-dsh-probe",
     "verify:shell": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-shell.ps1",
     "e2e:open-dsh": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/open-dsh-e2e.ps1",

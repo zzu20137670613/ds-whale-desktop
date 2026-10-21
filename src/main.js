@@ -1802,14 +1802,20 @@ function runTipProbe() {
         if (r.width <= 1) return { width: r.width };
         const x = r.left + r.width * ${Number(nx)};
         const y = r.top + r.height * ${Number(ny)};
+        /*
+         * 派发到「该坐标上真正被点到的元素」，而不是 frame。
+         * 上游在桌宠根节点上挂了 click → stopPropagation；派发到 frame 会绕过它，
+         * 事件直接冒泡到 document，把刚弹出的气泡立刻关掉 —— 真实点击不会这样。
+         */
+        const target = document.elementFromPoint(x, y) || frame;
         const zones = [];
         for (let i = 0; i < ${Number(times)}; i += 1) {
-          frame.dispatchEvent(new MouseEvent('click', {
+          target.dispatchEvent(new MouseEvent('click', {
             bubbles: true, cancelable: true, clientX: x, clientY: y
           }));
           zones.push(rootNode ? rootNode.getAttribute('data-dsh-whale-zone') : null);
         }
-        return { width: r.width, height: r.height, x: Math.round(x), y: Math.round(y), zones };
+        return { width: r.width, height: r.height, x: Math.round(x), y: Math.round(y), zones, tag: target.tagName };
       })()`);
 
       const leftHit = await clickAt(0.25, 0.9, 3);
@@ -1826,13 +1832,25 @@ function runTipProbe() {
       await sleep(2600);
       const TAIL_LINE = '哎呀，讨厌啦！我投降我老实交代：[深海回响]里羞羞剧情的触发词是[一夜鱼龙舞]';
       let tailHit = null;
+      let lastClicked = null;
+      let lastTailState = null;
+      let lastBubble = null;
       for (let attempt = 0; attempt < 3 && !tailHit; attempt += 1) {
         const clicked = await clickAt(0.72, 0.92, 3);
+        lastClicked = clicked;
+        lastTailState = await exec('window.__dshWhaleMoeTailState ? window.__dshWhaleMoeTailState() : null');
         const bubble = await waitExact(TAIL_LINE, 5000);
         if (bubble && bubble.text === TAIL_LINE) tailHit = { clicked, bubble };
-        else await sleep(1600); // 避开摸头三下的 2.2 秒庆祝期
+        else {
+          lastBubble = await readBubble();
+          await sleep(1600); // 避开摸头三下的 2.2 秒庆祝期
+        }
       }
-      check('尾尖三连点说出彩蛋台词', Boolean(tailHit), JSON.stringify(tailHit || {}));
+      check(
+        '尾尖三连点说出彩蛋台词',
+        Boolean(tailHit),
+        JSON.stringify(tailHit || { lastClicked, lastTailState, lastBubble })
+      );
 
       // ⑧ 长台词不能被窗口右边缘切掉（她默认蹲在右下角）
       const fit = await exec(`(() => {
@@ -1862,11 +1880,11 @@ function runTipProbe() {
         JSON.stringify({ round1, round2, tail1, tail2 })
       );
 
-      // ⑩ 待机闲聊间隔：5~8 分钟 → 2~5 分钟
+      // ⑩ 待机闲聊间隔：40 秒一句
       const idleWindow = await exec('window.__dshWhaleMoeIdleWindow ? window.__dshWhaleMoeIdleWindow() : null');
       check(
-        '待机闲聊间隔改为 2~5 分钟',
-        Array.isArray(idleWindow) && idleWindow[0] === 120000 && idleWindow[1] === 300000,
+        '待机闲聊间隔改为 40 秒',
+        Array.isArray(idleWindow) && idleWindow[0] === 40000 && idleWindow[1] === 40000,
         JSON.stringify(idleWindow)
       );
 
@@ -1887,6 +1905,15 @@ function runTipProbe() {
         '安利台词能说出且按顺序轮转',
         Boolean(ad1) && Boolean(adBubble) && adBubble.text === ad1 && Boolean(ad2) && ad2 !== ad1,
         JSON.stringify({ ad1, adBubble, ad2 })
+      );
+
+      // ⑬ 吐槽池：单独一池，不许混进安利池（安利池每句都得带游戏名）
+      const quipLines = await exec('window.__dshWhaleMoeQuipLines ? window.__dshWhaleMoeQuipLines() : null');
+      check(
+        '吐槽池独立且含「不可能同时当你的鲸娘」',
+        Array.isArray(quipLines) && quipLines.length >= 1 &&
+          quipLines.some((l) => String(l).includes('不可能同时当你的鲸娘')),
+        JSON.stringify(quipLines)
       );
 
       const image = await captureImage(win.webContents);
@@ -1919,7 +1946,7 @@ function runTipProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 14;
+    const expected = 15;
     log(
       '[tip-probe]',
       results.length !== expected

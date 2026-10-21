@@ -348,16 +348,27 @@ const MASCOT_PATCH = `/* shell-patched: 说话钩子（holdMs = 打完字后停�
        这类话用户是特意点出来的，被别的播报吞掉会很像 bug。 */
     function __shellSayImportant(line) {
       if (!line) return;
+      /* 先清掉上游排队中的台词。
+         三连点尾巴时，前两下会各自走一次上游 tailReact，把「尾巴是敏感开关」这类
+         反应句塞进 memory.pendingLine；160ms 后 scheduleNext 会把它显示出来，
+         正好把刚弹出、还在逐字打的彩蛋台词顶掉 —— 表现就是「台词闪一下就没了」。 */
+      try {
+        memory.pendingLine = "";
+        if (nextTimer) {
+          root.clearTimeout(nextTimer);
+          nextTimer = null;
+        }
+      } catch (e) { /* ignore */ }
       try { emitInteractionLine(localizeLine(line)); } catch (e) { /* ignore */ }
       showLineNow(line);
     }
     /* shell-patched: 「深海回响」安利词池（2026-10-19）——
        待机闲聊有 1/4 概率轮到这一池；六句轮着说、12 条内不重复。
        问候（3 小时一次）和天气变化优先，不抢它们的场。
-       同时按用户要求把待机闲聊间隔从 5~8 分钟改成 2~5 分钟。
+       同时按用户要求把待机闲聊间隔一路压到 40 秒一句（原 5~8 分钟 → 2~5 分钟 → 40 秒）。
        注意：vendor 的 DIALOGUE 是深冻结的，改不了，所以这里另起一个池子。 */
-    IDLE_CHAT_MIN = 2 * 60000;
-    IDLE_CHAT_MAX = 5 * 60000;
+    IDLE_CHAT_MIN = 40 * 1000;
+    IDLE_CHAT_MAX = 40 * 1000;
     if (idleChat.nextAt - Date.now() > IDLE_CHAT_MAX) {
       idleChat.nextAt = Date.now() + IDLE_CHAT_MIN + Math.floor(Math.random() * (IDLE_CHAT_MAX - IDLE_CHAT_MIN));
     }
@@ -383,6 +394,27 @@ const MASCOT_PATCH = `/* shell-patched: 说话钩子（holdMs = 打完字后停�
       __shellAdCursor = (__shellAdCursor + 1) % __shellAdLines.length;
       return fallback;
     }
+    /* shell-patched: 随机吐槽池（2026-10-21）——
+       跟安利池分开：安利池是推游戏的（每句必带「深海回响」），这里只放日常吐槽，
+       不占安利的概率，也不会把「安利池 6 句」的自检弄脏。 */
+    var __shellQuipLines = [
+      "我不可能同时当你的鲸娘、妈妈、女友和工具人的……",
+      "去别的地方玩，不要耽误AGI训练☞"
+    ];
+    var __shellQuipCursor = 0;
+    function __shellPickQuipLine() {
+      for (var qi = 0; qi < __shellQuipLines.length; qi += 1) {
+        var qidx = (__shellQuipCursor + qi) % __shellQuipLines.length;
+        var qcandidate = __shellQuipLines[qidx];
+        if (recentLines.indexOf(qcandidate) === -1) {
+          __shellQuipCursor = (qidx + 1) % __shellQuipLines.length;
+          return qcandidate;
+        }
+      }
+      var qfallback = __shellQuipLines[__shellQuipCursor % __shellQuipLines.length];
+      __shellQuipCursor = (__shellQuipCursor + 1) % __shellQuipLines.length;
+      return qfallback;
+    }
     var __shellIdleChatTick = idleChatTick;
     idleChatTick = function (now) {
       var greetingDue = (now - idleChat.lastGreetAt >= GREET_GAP_MS) &&
@@ -394,20 +426,31 @@ const MASCOT_PATCH = `/* shell-patched: 说话钩子（holdMs = 打完字后停�
         readPref("chat") && readPref("pet") &&
         bubbleFree() &&
         !greetingDue &&
-        !weatherChangedSinceTold() &&
-        Math.random() < 0.25
+        !weatherChangedSinceTold()
       ) {
-        idleChat.nextAt = now + IDLE_CHAT_MIN + Math.floor(Math.random() * (IDLE_CHAT_MAX - IDLE_CHAT_MIN));
-        var adLine = __shellPickAdLine();
-        if (adLine) {
-          showChatLine(adLine);
-          return;
+        var roll = Math.random();
+        // 1/4 安利「深海回响」，再接 1/8 吐槽；剩下的交回上游自己的闲聊池
+        if (roll < 0.25) {
+          idleChat.nextAt = now + IDLE_CHAT_MIN + Math.floor(Math.random() * (IDLE_CHAT_MAX - IDLE_CHAT_MIN));
+          var adLine = __shellPickAdLine();
+          if (adLine) {
+            showChatLine(adLine);
+            return;
+          }
+        } else if (roll < 0.375) {
+          idleChat.nextAt = now + IDLE_CHAT_MIN + Math.floor(Math.random() * (IDLE_CHAT_MAX - IDLE_CHAT_MIN));
+          var quipLine = __shellPickQuipLine();
+          if (quipLine) {
+            showChatLine(quipLine);
+            return;
+          }
         }
       }
       return __shellIdleChatTick(now);
     };
     /* 自检钩子：词池 / 间隔 / 立即说下一条 */
     root.__dshWhaleMoeAdLines = function () { return __shellAdLines.slice(); };
+    root.__dshWhaleMoeQuipLines = function () { return __shellQuipLines.slice(); };
     root.__dshWhaleMoeAdSayNext = function () {
       var line = __shellPickAdLine();
       if (line) showChatLine(line);

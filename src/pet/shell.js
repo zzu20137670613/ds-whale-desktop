@@ -491,6 +491,20 @@
   // vendor 不改；上游自己到点照常刷新，两边不冲突。
   const WEATHER_FRESH_MS = 2 * 3600 * 1000;
   let weatherPending = false;
+  /*
+   * 失败退避。
+   *
+   * 为什么必须有：refreshHud() 会调 ensureWeatherFresh()，而失败分支的 finally 里
+   * 又调 refreshHud() —— 一旦拉取失败（断网 / 被墙 / 城市名不存在），就成了
+   * 「失败 → refreshHud → 再拉 → 再失败」的死循环。实测一天刷掉约 170MB 日志：
+   * shell.log 八天涨到 1.37GB，其中 24.6 万行全是同一条 weather prefetch failed。
+   *
+   * 现在失败后按 30s → 2min → 10min → 30min 退避，成功即清零；
+   * 日志只在第一次失败和每第 10 次时打，免得把有用信息淹掉。
+   */
+  let weatherRetryAt = 0;
+  let weatherFailStreak = 0;
+  const WEATHER_BACKOFF_MS = [30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000, 30 * 60 * 1000];
 
   function weatherStored(key) {
     try {
@@ -504,6 +518,10 @@
     const state = window.__dshWhaleMoeWeather;
     const city = weatherStored('weatherCity');
     if (!state || !city || weatherPending) {
+      return;
+    }
+    // 刚失败过就等退避时间到；用户主动改城市/Key（force）时不挡
+    if (!force && Date.now() < weatherRetryAt) {
       return;
     }
     const fresh = state.current && Date.now() - (state.fetchedAt || 0) < WEATHER_FRESH_MS;
@@ -545,9 +563,19 @@
         /* 缓存坐标失败无所谓 */
       }
       api.log('info', `天气已预取：${city} ${Math.round(state.current.temp)}°`);
+      weatherFailStreak = 0;
+      weatherRetryAt = 0;
     } catch (error) {
       state.status = 'error';
-      api.log('error', 'weather prefetch failed: ' + error.message);
+      weatherFailStreak += 1;
+      const delay = WEATHER_BACKOFF_MS[Math.min(weatherFailStreak - 1, WEATHER_BACKOFF_MS.length - 1)];
+      weatherRetryAt = Date.now() + delay;
+      if (weatherFailStreak === 1 || weatherFailStreak % 10 === 0) {
+        api.log(
+          'error',
+          `weather prefetch failed (第 ${weatherFailStreak} 次，${Math.round(delay / 1000)}s 后重试): ` + error.message
+        );
+      }
     } finally {
       weatherPending = false;
       refreshHud();

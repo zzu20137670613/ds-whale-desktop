@@ -11,7 +11,7 @@
  *   齿轮设置面板全部零改动可用 —— 这是改动量最小、行为最忠实宿主。
  */
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, globalShortcut, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, globalShortcut, shell, powerMonitor } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -97,13 +97,14 @@ const GROWTH_PROBE = argValue('growth-probe') !== undefined;
 const SAY_PROBE = argValue('say-probe') !== undefined;
 const TIP_PROBE = argValue('tip-probe') !== undefined;
 const OPEN_DSH_PROBE = argValue('open-dsh-probe') !== undefined;
+const REBUILD_PROBE = argValue('rebuild-probe') !== undefined;
 /** 自检用：强制跳过单实例锁，便于与常驻实例并存做封闭测试。 */
 const STANDALONE = argValue('standalone') !== undefined;
 /** 自检用：临时覆盖监听端口，避免与常驻实例抢同一个源。 */
 const PORT_OVERRIDE = Number(argValue('port')) > 0 ? Number(argValue('port')) : null;
 /** shot / menu-probe / standalone 都是自检模式，要允许与常驻实例并存。 */
 const PROBE_MODE =
-  SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE || GROWTH_PROBE || SAY_PROBE || TIP_PROBE || OPEN_DSH_PROBE;
+  SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE || GROWTH_PROBE || SAY_PROBE || TIP_PROBE || OPEN_DSH_PROBE || REBUILD_PROBE;
 /**
  * 「打开DSH」只演练、不真开浏览器。
  *
@@ -276,7 +277,10 @@ function createWindow() {
   win.setIgnoreMouseEvents(true, { forward: true });
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
+  const self = win;
   win.on('closed', () => {
+    // 重建窗口时旧窗口的 closed 事件可能晚到，别把新窗口的引用一起清掉
+    if (win !== self) return;
     stopCursorPolling();
     win = null;
   });
@@ -304,6 +308,7 @@ function createWindow() {
     else if (GROWTH_PROBE) runGrowthProbe();
     else if (SAY_PROBE) runSayProbe();
     else if (TIP_PROBE) runTipProbe();
+    else if (REBUILD_PROBE) runRebuildProbe();
     else if (OPEN_DSH_PROBE) runOpenDshProbe();
     else if (DSH_PROBE) runDshProbe();
     else if (MENU_PROBE) runMenuProbe();
@@ -313,6 +318,89 @@ function createWindow() {
   screen.on('display-metrics-changed', applyBounds);
   screen.on('display-added', applyBounds);
   screen.on('display-removed', applyBounds);
+}
+
+// ---------------------------------------------------------------- 窗口自愈
+/**
+ * 重建桌宠窗口。
+ *
+ * 为什么不是 reload：实测「睡眠唤醒后整只桌宠从桌面消失」时，托盘的「重新加载页面」
+ * 救不回来 —— 页面侧全是好的（JS 在跑、日志照写、窗口句柄还在、可见/置顶/cloaked
+ * 全部正常），坏的是 browser 进程那份窗口合成表面。只有 destroy 后重建才能恢复。
+ *
+ * 状态不丢：位置、大小、偏好在 localStorage 与 config 里，重建后照旧恢复。
+ */
+let lastRebuildAt = 0;
+function rebuildPetWindow(reason) {
+  if (!win || win.isDestroyed()) return false;
+  const now = Date.now();
+  // 防抖：唤醒风暴（resume 与 unlock 连发）时别来回重建
+  if (now - lastRebuildAt < 5000) return false;
+  lastRebuildAt = now;
+  log('[window] rebuild:', reason);
+  const old = win;
+  win = null;
+  try {
+    old.destroy();
+  } catch (error) {
+    log('[window] rebuild destroy failed', error.message);
+  }
+  createWindow();
+  return true;
+}
+
+/**
+ * 窗口自愈的三个触发点，必须在 app ready 之后注册。
+ */
+function registerWindowHealing() {
+  // ① 睡眠/休眠唤醒 —— 实测的主犯。等一拍再建，DWM 刚醒时未必接得住新表面
+  powerMonitor.on('resume', () => {
+    setTimeout(() => rebuildPetWindow('power-resume'), 1200);
+  });
+  // ② 锁屏后解锁 —— 同样会重建 DWM 合成
+  powerMonitor.on('unlock-screen', () => rebuildPetWindow('unlock-screen'));
+  // ③ GPU 进程崩溃 —— Chromium 会换个 GPU 进程，但旧窗口的表面回不来
+  app.on('child-process-gone', (_event, details) => {
+    if (details && details.type === 'GPU') rebuildPetWindow('gpu-gone');
+  });
+  log('[window] healing registered');
+}
+
+/**
+ * 窗口自愈自检：不真的睡一觉，直接走一次重建路径。
+ *
+ * 要验的是「重建本身别把窗口搞丢」——新窗口建起来、可见、标题对、防抖生效；
+ * 页面内容不在这儿验（tip/say/growth 各条探针已经覆盖）。
+ */
+let rebuildProbeRan = false;
+function runRebuildProbe() {
+  if (rebuildProbeRan) return;
+  rebuildProbeRan = true;
+  const results = [];
+  const check = (name, ok, detail) => {
+    results.push({ name, ok });
+    log(`[rebuild-probe] ${ok ? 'PASS' : 'FAIL'} ${name}${detail === undefined ? '' : ` :: ${detail}`}`);
+  };
+  setTimeout(() => {
+    const beforeId = win && !win.isDestroyed() ? win.id : null;
+    const rebuilt = rebuildPetWindow('probe');
+    setTimeout(() => {
+      const afterId = win && !win.isDestroyed() ? win.id : null;
+      check('rebuild 返回 true', rebuilt === true, String(rebuilt));
+      check('窗口 id 已更换', beforeId !== afterId, `${beforeId} -> ${afterId}`);
+      check('新窗口存在且未销毁', Boolean(win) && !win.isDestroyed(), String(afterId));
+      check(
+        `新窗口可见（config.visible=${config.visible}）`,
+        config.visible ? Boolean(win) && win.isVisible() : true,
+        String(win && win.isVisible()),
+      );
+      check('新窗口标题正确', Boolean(win) && win.getTitle() === '鲸鲸桌宠', win && win.getTitle());
+      check('5 秒内二次重建被防抖挡下', rebuildPetWindow('probe-again') === false, '');
+      const failed = results.filter((r) => !r.ok).length;
+      log(`[rebuild-probe] 断言 ${results.length} 条，失败 ${failed} 条`);
+      setTimeout(() => app.quit(), 600);
+    }, 2600);
+  }, 1500);
 }
 
 // ---------------------------------------------------------------- 光标轮询
@@ -825,6 +913,7 @@ function buildTrayTemplate() {
     },
     { label: '重置到默认位置', click: resetPosition },
     { label: '重新加载页面', click: () => win && win.webContents.reload() },
+    { label: '修复画面（重建窗口）', click: () => rebuildPetWindow('tray') },
     { type: 'separator' },
     { label: '打开数据目录', click: () => require('electron').shell.openPath(app.getPath('userData')) },
     { label: '打开日志', click: () => require('electron').shell.openPath(logFile()) },
@@ -3249,6 +3338,7 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
 
     createWindow();
     createTray();
+    registerWindowHealing();
 
     /*
      * 价目表：运行时只读本地 pricing.json（不联网 —— 没有价格 API，爬页面会静默失效）。

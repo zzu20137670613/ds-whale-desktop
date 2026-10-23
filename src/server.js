@@ -174,7 +174,7 @@ const MASCOT_PATCH = `/* shell-patched: 说话钩子（holdMs = 打完字后停�
           zones 偏好关闭时不做判定（与上游「分区反应」开关保持一致）。
        ③ 想改词表/分数线，只动下面两张表；别去改 vendor。 */
     var __shellTipWords = {
-      extra: ["今天营业吗", "岁月静好", "一夜鱼龙舞"],
+      extra: ["今天营业吗", "岁月静好", "一夜鱼龙舞", "白米饭"],
       hidden: [
         "Claude的图书馆借阅证",
         "gpt小龙娘的天空之城龙王宝座",

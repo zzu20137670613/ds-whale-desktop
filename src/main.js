@@ -17,6 +17,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { startPetServer } = require('./server');
+const { startPetBridge, BRIDGE_PORT } = require('./pet-bridge');
 const { DshStateWatcher } = require('./dsh-state');
 const { startBalanceProxy } = require('./balance-proxy');
 const { costOf, shouldAnnounce, announceText, formatTokens, formatMoney, isPeak } = require('./pricing');
@@ -98,13 +99,14 @@ const SAY_PROBE = argValue('say-probe') !== undefined;
 const TIP_PROBE = argValue('tip-probe') !== undefined;
 const OPEN_DSH_PROBE = argValue('open-dsh-probe') !== undefined;
 const REBUILD_PROBE = argValue('rebuild-probe') !== undefined;
+const BRIDGE_PROBE = argValue('bridge-probe') !== undefined;
 /** 自检用：强制跳过单实例锁，便于与常驻实例并存做封闭测试。 */
 const STANDALONE = argValue('standalone') !== undefined;
 /** 自检用：临时覆盖监听端口，避免与常驻实例抢同一个源。 */
 const PORT_OVERRIDE = Number(argValue('port')) > 0 ? Number(argValue('port')) : null;
 /** shot / menu-probe / standalone 都是自检模式，要允许与常驻实例并存。 */
 const PROBE_MODE =
-  SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE || GROWTH_PROBE || SAY_PROBE || TIP_PROBE || OPEN_DSH_PROBE || REBUILD_PROBE;
+  SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE || GROWTH_PROBE || SAY_PROBE || TIP_PROBE || OPEN_DSH_PROBE || REBUILD_PROBE || BRIDGE_PROBE;
 /**
  * 「打开DSH」只演练、不真开浏览器。
  *
@@ -309,6 +311,7 @@ function createWindow() {
     else if (SAY_PROBE) runSayProbe();
     else if (TIP_PROBE) runTipProbe();
     else if (REBUILD_PROBE) runRebuildProbe();
+    else if (BRIDGE_PROBE) runBridgeProbe();
     else if (OPEN_DSH_PROBE) runOpenDshProbe();
     else if (DSH_PROBE) runDshProbe();
     else if (MENU_PROBE) runMenuProbe();
@@ -401,6 +404,158 @@ function runRebuildProbe() {
       setTimeout(() => app.quit(), 600);
     }, 2600);
   }, 1500);
+}
+
+// ---------------------------------------------------------------- 游戏联动
+/**
+ * 游戏联动：被 the-11th-forest 隐藏关「吸走」时藏起来，退出时回来。
+ *
+ * 为什么不是 kill 进程：游戏崩了、强退了，被杀的桌宠就回不来，玩家得去任务管理器捞。
+ * 隐藏窗口在玩家眼里跟下线没区别，却随时能拉回来 —— 这条比"真退出"重要。
+ *
+ * 三层保险：游戏正常退出会 resume；忘了发就等 10 分钟自动回来；还不行托盘手动捞。
+ */
+const BRIDGE_AUTO_RESUME_MS = 10 * 60 * 1000;
+let bridgeSuspended = false;
+let bridgeResumeTimer = null;
+let bridgeStatus = { ok: false, port: BRIDGE_PORT, protocol: null };
+
+function suspendForGame(reason) {
+  if (!win || win.isDestroyed()) return false;
+  if (bridgeSuspended) return true;
+  bridgeSuspended = true;
+  log('[bridge] suspend:', reason);
+  try {
+    win.hide();
+  } catch (error) {
+    log('[bridge] hide failed', error.message);
+  }
+  if (bridgeResumeTimer) clearTimeout(bridgeResumeTimer);
+  bridgeResumeTimer = setTimeout(() => {
+    log('[bridge] auto resume after', Math.round(BRIDGE_AUTO_RESUME_MS / 1000), 's');
+    resumeForGame('auto-timeout');
+  }, BRIDGE_AUTO_RESUME_MS);
+  refreshTrayMenu();
+  return true;
+}
+
+function resumeForGame(reason) {
+  if (!bridgeSuspended) return false;
+  bridgeSuspended = false;
+  if (bridgeResumeTimer) {
+    clearTimeout(bridgeResumeTimer);
+    bridgeResumeTimer = null;
+  }
+  log('[bridge] resume:', reason);
+  if (win && !win.isDestroyed() && config.visible) win.showInactive();
+  refreshTrayMenu();
+  return true;
+}
+
+function startBridge() {
+  return startPetBridge({
+    version: app.getVersion(),
+    onPing: () => (bridgeSuspended ? 'suspended' : 'awake'),
+    onSuspend: (reason) => suspendForGame(reason),
+    onResume: (reason) => resumeForGame(reason),
+    log,
+  }).then((result) => {
+    bridgeStatus = result;
+    return result;
+  });
+}
+
+/**
+ * 游戏联动自检：不起游戏，直接用 node 的 http 敲自己。
+ *
+ * 验的是桥接的边界，不是 UI：ping 通、协商常量错被拒、外部 Origin 被拒、
+ * suspend 真把窗口藏了、resume 真拉回来、GET 不许改状态、未知路由 404。
+ */
+function runBridgeProbe() {
+  const results = [];
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const check = (name, ok, detail) => {
+    results.push({ name, ok });
+    log(`[bridge-probe] ${ok ? 'PASS' : 'FAIL'} ${name}${detail === undefined ? '' : ` :: ${detail}`}`);
+  };
+
+  const request = (path, method = 'GET', headers = {}) =>
+    new Promise((resolve) => {
+      const req = http.request(
+        { host: '127.0.0.1', port: BRIDGE_PORT, path, method, headers, timeout: 3000 },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => {
+            body += chunk;
+          });
+          res.on('end', () => {
+            let json = null;
+            try {
+              json = JSON.parse(body);
+            } catch {
+              /* 非 JSON 就留 null */
+            }
+            resolve({ status: res.statusCode, json });
+          });
+        }
+      );
+      req.on('error', (error) => resolve({ error: error.message }));
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.end();
+    });
+
+  setTimeout(async () => {
+    try {
+      const ping = await request('/__pet/ping?app=ds-pet-bridge');
+      check('ping 通且协议版本为 1', ping.status === 200 && ping.json?.protocol === 1, JSON.stringify(ping));
+      check('ping 报告 awake', ping.json?.state === 'awake', String(ping.json?.state));
+
+      const wrongApp = await request('/__pet/ping?app=wrong');
+      check('协商常量不对时拒绝', wrongApp.status === 400, String(wrongApp.status));
+
+      const evilOrigin = await request('/__pet/ping?app=ds-pet-bridge', 'GET', { Origin: 'https://evil.example' });
+      check('外部 Origin 被拒', evilOrigin.status === 403, String(evilOrigin.status));
+
+      const suspended = await request('/__pet/suspend?app=ds-pet-bridge', 'POST', { Origin: 'http://localhost:8080' });
+      await sleep(400);
+      check(
+        'suspend 后窗口隐藏',
+        suspended.json?.ok === true && Boolean(win) && !win.isDestroyed() && !win.isVisible(),
+        JSON.stringify(suspended.json)
+      );
+
+      const pingSuspend = await request('/__pet/ping?app=ds-pet-bridge');
+      check('挂起时 ping 报告 suspended', pingSuspend.json?.state === 'suspended', String(pingSuspend.json?.state));
+
+      const getSuspend = await request('/__pet/suspend?app=ds-pet-bridge', 'GET');
+      check('suspend 只认 POST（GET 被拒）', getSuspend.status === 405, String(getSuspend.status));
+
+      const resumed = await request('/__pet/resume?app=ds-pet-bridge', 'POST');
+      await sleep(600);
+      check(
+        'resume 后窗口回来',
+        resumed.json?.ok === true && Boolean(win) && !win.isDestroyed() && win.isVisible(),
+        JSON.stringify(resumed.json)
+      );
+
+      const unknown = await request('/__pet/nope?app=ds-pet-bridge');
+      check('未知路由 404', unknown.status === 404, String(unknown.status));
+    } catch (error) {
+      log('[bridge-probe] failed', error.message);
+    }
+
+    const failed = results.filter((r) => !r.ok).length;
+    const expected = 9;
+    log(
+      '[bridge-probe]',
+      results.length !== expected
+        ? `DONE 断言数不符：跑了 ${results.length} 项、预期 ${expected} 项，失败 ${failed} 项`
+        : failed === 0
+          ? `DONE 全部 ${expected} 项通过`
+          : `DONE ${failed}/${expected} 项未通过`
+    );
+    app.exit(failed === 0 && results.length === expected ? 0 : 1);
+  }, 3200);
 }
 
 // ---------------------------------------------------------------- 光标轮询
@@ -893,6 +1048,9 @@ function toggleVisible() {
 function buildTrayTemplate() {
   return [
     { label: '显示桌宠', type: 'checkbox', checked: config.visible, click: () => setVisible(!config.visible) },
+    ...(bridgeSuspended
+      ? [{ label: '游戏联动中 —— 点这里叫回桌宠', click: () => resumeForGame('tray') }]
+      : []),
     { type: 'separator' },
     { label: '总是置顶', type: 'checkbox', checked: config.alwaysOnTop, click: () => setAlwaysOnTop(!config.alwaysOnTop) },
     {
@@ -3366,6 +3524,7 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
     createWindow();
     createTray();
     registerWindowHealing();
+    startBridge();
 
     /*
      * 价目表：运行时只读本地 pricing.json（不联网 —— 没有价格 API，爬页面会静默失效）。
